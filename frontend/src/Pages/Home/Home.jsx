@@ -116,11 +116,20 @@ const Home = () => {
         {/* SECTION 1: HERO */}
       <section data-section="0" className="min-h-svh flex flex-col justify-center items-center px-4 text-center relative overflow-hidden">
         {/* Glow blobs */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute top-20 right-1/4 w-64 h-64 bg-violet-600/8 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-20 right-1/4 w-80 h-80 bg-violet-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-10 left-1/4 w-64 h-64 bg-cyan-600/8 rounded-full blur-3xl pointer-events-none" />
+        {/* Subtle dot-grid texture */}
+        <div className="absolute inset-0 dot-grid-pattern opacity-[0.025] pointer-events-none" />
 
         {/* All hero content sits above the canvas */}
         <div className="relative z-10 flex flex-col items-center text-center">
+        {/* Announcement badge — visible from the start */}
+        <div className="badge-float mb-6 inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/15 via-violet-500/10 to-cyan-500/15 border border-indigo-400/25 backdrop-blur-sm">
+          <span className="text-indigo-300 text-xs">✨</span>
+          <span className="text-xs font-semibold text-indigo-200 tracking-wider">AI-Powered Career Platform</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+        </div>
         {/* EduPath logo badge — fades in with buttons after typing */}
         <div
           style={{
@@ -190,7 +199,7 @@ const Home = () => {
           }}
         >
           <button
-            className="backdrop-blur-lg bg-indigo-500/20 text-white px-8 py-4 rounded-xl font-bold border border-indigo-400/30 hover:bg-indigo-500/30 hover:border-indigo-400/50 hover:scale-105 hover:shadow-xl hover:shadow-indigo-500/50 transition-all duration-300 cursor-pointer"
+            className="btn-primary-shimmer text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-300 cursor-pointer"
             onClick={() => navigate('/assessment')}
           >
             Skill Assessment →
@@ -482,7 +491,7 @@ const Home = () => {
               
               <button 
                 onClick={() => navigate('/contact')}
-                className="backdrop-blur-lg bg-indigo-500/20 text-white px-8 py-4 rounded-xl font-bold border border-indigo-400/30 hover:bg-indigo-500/30 hover:border-indigo-400/50 hover:scale-105 hover:shadow-xl hover:shadow-indigo-500/50 transition-all duration-300 cursor-pointer"
+                className="btn-primary-shimmer text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-300 cursor-pointer"
               >
                 Contact Support →
               </button>
@@ -493,26 +502,26 @@ const Home = () => {
 
           {/* Stats Bar */}
           <div data-animate className="text-center mb-12">
-             <span className="text-emerald-500 font-bold bg-emerald-50 px-4 py-1 rounded-full text-xs uppercase tracking-widest">Community Success</span>
-             <h2 className="text-3xl font-bold mt-4"><span className="text-emerald-500">Real Stories</span> from Our Community</h2>
+             <span className="text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-4 py-1 rounded-full text-xs uppercase tracking-widest">Community Success</span>
+             <h2 className="text-3xl font-bold mt-4"><span className="text-emerald-400">Real Stories</span> from Our Community</h2>
              <p className="text-slate-500 mt-2 max-w-2xl mx-auto text-sm">Join thousands of learners who have transformed their careers with LearnPath.</p>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
             <div data-animate style={{transitionDelay: '0s'}}>
-              <div className="text-3xl font-black mb-1">10,000+</div>
+              <div className="text-3xl font-black mb-1 text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">10,000+</div>
               <div className="text-slate-400 text-sm">Success Stories</div>
             </div>
             <div data-animate style={{transitionDelay: '0.1s'}}>
-              <div className="text-3xl font-black mb-1">85%</div>
+              <div className="text-3xl font-black mb-1 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">85%</div>
               <div className="text-slate-400 text-sm">Career Transitions</div>
             </div>
             <div data-animate style={{transitionDelay: '0.2s'}}>
-              <div className="text-3xl font-black mb-1">160%</div>
+              <div className="text-3xl font-black mb-1 text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-yellow-400">160%</div>
               <div className="text-slate-400 text-sm">Avg Salary Increase</div>
             </div>
             <div data-animate style={{transitionDelay: '0.3s'}}>
-              <div className="text-3xl font-black mb-1">6 months</div>
+              <div className="text-3xl font-black mb-1 text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-pink-400">6 months</div>
               <div className="text-slate-400 text-sm">Avg Learning Time</div>
             </div>
           </div>
@@ -524,10 +533,13 @@ const Home = () => {
         {/* Glow blobs */}
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[300px] bg-indigo-600/12 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[200px] bg-violet-600/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="relative flex items-center justify-center min-h-[400px]">
-          <h1 data-animate className="text-[120px] md:text-[180px] lg:text-[240px] font-black tracking-tighter leading-none uppercase text-white">
+        <div className="relative flex flex-col items-center justify-center min-h-[400px] gap-6">
+          <h1 data-animate className="text-[120px] md:text-[180px] lg:text-[240px] font-black tracking-tighter leading-none uppercase animate-gradient-text">
             EDUPATH
           </h1>
+          <p data-animate style={{transitionDelay: '0.15s'}} className="text-slate-500 text-base md:text-lg tracking-[0.15em] uppercase font-medium">
+            Your Path to Success
+          </p>
         </div>
       </section>
 
