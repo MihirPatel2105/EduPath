@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import { CAREER_ROLES } from '../utils/careerRoles.js';
+import { LEARNING_STYLES } from '../utils/learningStyles.js';
 
 /**
  * User Model - Authentication and user management
@@ -27,8 +29,12 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      // The old pattern capped each label at 3 characters, which rejected every
+      // TLD longer than that (.tech, .info, .online, .store, .email). Those
+      // addresses passed the express-validator isEmail() check on the route and
+      // then failed here, so signup broke with no useful explanation.
       match: [
-        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+        /^[\w.+-]+@[\w-]+(\.[\w-]+)*\.[A-Za-z]{2,}$/,
         'Please provide a valid email address',
       ],
     },
@@ -53,8 +59,17 @@ const userSchema = new mongoose.Schema(
       default: 'student',
     },
     // Profile information
+    //
+    // The career track everything personalised is built from. It is an enum
+    // because the AI service matches these strings verbatim against its
+    // roadmap templates — a free-text role has no curriculum behind it. '' is
+    // the "not chosen yet" state.
     target_role: {
       type: String,
+      enum: {
+        values: [...CAREER_ROLES, ''],
+        message: '{VALUE} is not a supported career role',
+      },
       default: '',
       trim: true,
     },
@@ -66,8 +81,16 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // How the weekly plan is phrased. An enum because the AI service keys its
+    // task templates off these exact values and quietly falls back to mixed
+    // for anything else — so a stray value would look like the setting simply
+    // did nothing. '' is "not chosen yet".
     learning_style: {
       type: String,
+      enum: {
+        values: [...LEARNING_STYLES, ''],
+        message: '{VALUE} is not a supported learning style',
+      },
       default: '',
       trim: true,
     },
@@ -78,6 +101,13 @@ const userSchema = new mongoose.Schema(
     profile_complete: {
       type: Boolean,
       default: false,
+    },
+    // When the first-run tour was dismissed. Stored per account rather than in
+    // browser storage so it follows the person to another device and is not
+    // lost by clearing site data. Null means they have not seen it.
+    tour_seen_at: {
+      type: Date,
+      default: null,
     },
     profile: {
       phone: {
@@ -129,23 +159,9 @@ const userSchema = new mongoose.Schema(
         default: '',
       },
       currentSkills: [String],
-      targetRole: {
-        type: String,
-        enum: [
-          'MERN',
-          'AI',
-          'Cyber',
-          'Data Science',
-          'DevOps',
-          'Mobile',
-          'MERN Developer',
-          'AI/ML Engineer',
-          'Cybersecurity Engineer',
-          'Data Science Engineer',
-          'DevOps Engineer',
-          'Mobile Developer',
-        ],
-      },
+      // profile.targetRole used to duplicate the root target_role, and the two
+      // drifted because not every write path updated both. The root field is
+      // now the only one.
       availableLearningTime: {
         type: Number,
         default: 10,
@@ -167,6 +183,23 @@ const userSchema = new mongoose.Schema(
     notificationEnabled: {
       type: Boolean,
       default: true,
+    },
+    /**
+     * The Monday email.
+     *
+     * Separate from notificationEnabled, which is a generic flag nothing has
+     * ever read — folding an actual outbound email into it would mean a
+     * learner who turned off "notifications" for something else silently
+     * stopped receiving this too, or worse, started receiving it.
+     *
+     * Defaults to true so a new signup is opted in at the point they choose
+     * to join. Accounts that existed before the email did are switched off by
+     * scripts/optOutExistingFromWeeklyEmail.js — they never agreed to it.
+     */
+    weeklyEmail: {
+      enabled: { type: Boolean, default: true },
+      // Guards against a double send if the job runs twice in a window.
+      lastSentAt: { type: Date },
     },
     // Skill assessment profile
     skillProfile: {
@@ -422,29 +455,25 @@ userSchema.methods.getActiveRoadmap = async function () {
   return mongoose.model('Roadmap').findById(this.activeRoadmap);
 };
 
-// Method to check if user has completed roadmap profile
-userSchema.methods.hasRoadmapProfile = function () {
-  return !!(
-    this.profile?.targetRole &&
-    this.profile?.occupation?.experienceLevel &&
-    this.profile?.availableLearningTime
-  );
-};
-
-// Static method to get the next serial number for user ID generation
+// Static method to get the next serial number for user ID generation.
+//
+// Sorting by loginId used to pick the alphabetically largest id, which is the
+// highest *name prefix* rather than the highest serial — ZZZZ2026001 outranked
+// AAAA2026999 — so this returned a serial that was already taken. The serial is
+// now extracted and compared as a number.
+//
+// This still races: two concurrent signups can read the same maximum. The unique
+// index on loginId is what actually guarantees uniqueness, and callers retry on
+// the resulting duplicate-key error.
 userSchema.statics.getNextSerialNumber = async function (year) {
-  const lastUser = await this.findOne({
-    loginId: new RegExp(`^[A-Z]{4}${year}`),
-  })
-    .sort({ loginId: -1 })
-    .select('loginId');
+  const [highest] = await this.aggregate([
+    { $match: { loginId: new RegExp(`^[A-Z]{4}${year}\\d+$`) } },
+    { $project: { serial: { $toInt: { $substrBytes: ['$loginId', 8, 10] } } } },
+    { $sort: { serial: -1 } },
+    { $limit: 1 },
+  ]);
 
-  if (!lastUser) {
-    return 1;
-  }
-
-  const lastSerial = parseInt(lastUser.loginId.slice(-3));
-  return lastSerial + 1;
+  return (highest?.serial ?? 0) + 1;
 };
 
 // Static method to get top performers

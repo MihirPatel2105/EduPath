@@ -1,158 +1,207 @@
-import React, { useState } from 'react';
-import AdminSidebar from '../component/AdminSidebar';
-import AdminNavbar from '../component/AdminNavbar';
-import BackgroundAnimation from '../../Pages/Assessment/AssesmentDashboard/components/BackgroundAnimation';
+import React, { useEffect, useState } from 'react';
+import {
+  AdminShell, Card, CardHeader, Button, Stepper, Toggle, SegmentedFilter,
+  MicroLabel, InlineMessage, Loading, Empty,
+} from '../../design';
+import { adminNav } from '../../design/nav';
+import { getSettings, updateSettings } from '../services/adminService';
+import { useAdminData } from '../useAdminData';
+
+/**
+ * Spec §7 Admin · Settings.
+ *
+ * Centred 780px. Card one holds three stepper rows and a row whose control is
+ * a three-option segmented group. Card two holds a toggle row whose detail
+ * line changes with the state, then a row with a full-width mono input on
+ * surface-field. The footer pairs the primary with a green confirmation note
+ * that only appears after saving.
+ *
+ * All six are read where they claim to apply. The quiz controller caps the
+ * question count, takes the session expiry from the duration, refuses the
+ * request when AI generation is off, and passes the base prompt into the
+ * generation prompt; the roadmap controller sends the module cap to the
+ * generator and falls back to the default level when a learner has not picked
+ * one. Three of them used to be stored and read by nothing, which made this
+ * screen a form that looked like a control panel.
+ */
+const LEVELS = ['Beginner', 'Intermediate', 'Advanced'];
+
+const Row = ({ title, detail, children, last = false }) => (
+  <div
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 24,
+      flexWrap: 'wrap',
+      padding: '17px 20px',
+      borderBottom: last ? 'none' : '1px solid var(--color-line-soft)',
+    }}
+  >
+    <div>
+      <div style={{ fontSize: 15.5, fontWeight: 500, color: 'var(--color-ink)' }}>{title}</div>
+      {detail && <div style={{ fontSize: 14, color: 'var(--color-text-3)', marginTop: 3 }}>{detail}</div>}
+    </div>
+    <div style={{ flexShrink: 0 }}>{children}</div>
+  </div>
+);
 
 const SystemSettings = () => {
-  const [settings, setSettings] = useState({
-    maxQuestions: 10,
-    maxDuration: 30,
-    maxModules: 8,
-    defaultLevel: 'Beginner',
-    enableAI: true,
-    basePrompt: 'Generate structured JSON output only. No explanations.',
-  });
+  const { data, loading, error, reload } = useAdminData(getSettings);
+  const [settings, setSettings] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
-  const handleInputChange = (field, value) => {
-    setSettings((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+  // The form edits a copy, so an unsaved change is not mistaken for stored state.
+  useEffect(() => { if (data) setSettings(data); }, [data]);
+
+  const change = (field, value) => {
+    setSettings((prev) => ({ ...prev, [field]: value }));
+    setSaved(false);
+    setSaveError('');
   };
 
-  const handleSave = () => {
-    console.log('Settings:', settings);
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const stored = await updateSettings({
+        maxQuestions: settings.maxQuestions,
+        maxDuration: settings.maxDuration,
+        maxModules: settings.maxModules,
+        defaultLevel: settings.defaultLevel,
+        enableAI: settings.enableAI,
+        basePrompt: settings.basePrompt,
+      });
+      setSettings(stored);
+      setSaved(true);
+    } catch (err) {
+      setSaveError(err.message);
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading || (!settings && !error)) {
+    return (
+      <AdminShell items={adminNav} title="Settings">
+        <Card><Loading /></Card>
+      </AdminShell>
+    );
+  }
+
+  if (error) {
+    return (
+      <AdminShell items={adminNav} title="Settings">
+        <Card>
+          <Empty action={<Button onClick={reload}>Try again</Button>}>{error}</Empty>
+        </Card>
+      </AdminShell>
+    );
+  }
 
   return (
-    <div className="flex h-screen bg-black relative overflow-hidden">
-      <BackgroundAnimation />
+    <AdminShell items={adminNav} title="Settings">
+      <div style={{ maxWidth: 780, margin: '0 auto', width: '100%' }}>
+        <Card>
+          <CardHeader label="Generation limits" />
 
-      {/* Sidebar */}
-      <AdminSidebar />
+          <Row title="Questions per quiz" detail="Caps what the generator returns, whatever a learner asks for.">
+            <Stepper
+              value={settings.maxQuestions}
+              onChange={(v) => change('maxQuestions', v)}
+              min={1}
+              max={50}
+            />
+          </Row>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden relative z-10">
-        {/* Navbar */}
-        <AdminNavbar />
+          <Row title="Quiz duration" detail="Minutes before a session expires.">
+            <Stepper
+              value={settings.maxDuration}
+              onChange={(v) => change('maxDuration', v)}
+              min={1}
+              max={180}
+              suffix=" min"
+            />
+          </Row>
 
-        {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Page Header */}
-          <div>
-            <h1 className="text-2xl font-semibold text-gray-100">System Settings</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Configure AI generation limits and platform controls.
+          <Row title="Modules per roadmap" detail="Longer tracks are trimmed to this, keeping prerequisites.">
+            <Stepper
+              value={settings.maxModules}
+              onChange={(v) => change('maxModules', v)}
+              min={1}
+              max={30}
+            />
+          </Row>
+
+          <Row title="Default roadmap level" detail="Paces the plan when a learner has not set their own." last>
+            <SegmentedFilter
+              options={LEVELS}
+              value={settings.defaultLevel}
+              onChange={(v) => change('defaultLevel', v)}
+              size="lg"
+            />
+          </Row>
+        </Card>
+
+        <Card style={{ marginTop: 22 }}>
+          <CardHeader label="AI control" />
+
+          <Row
+            title="AI generation"
+            detail={
+              settings.enableAI
+                ? 'Quizzes are generated on demand.'
+                : 'Off — quiz generation is refused and learners are told to try later.'
+            }
+          >
+            <Toggle
+              checked={settings.enableAI}
+              onChange={(v) => change('enableAI', v)}
+              label="Enable AI generation"
+            />
+          </Row>
+
+          <div style={{ padding: '17px 20px' }}>
+            <MicroLabel size={11} tracking="0.12em" style={{ display: 'block', marginBottom: 8 }}>
+              Base prompt
+            </MicroLabel>
+            <p style={{ margin: '0 0 10px', fontSize: 14, color: 'var(--color-text-3)' }}>
+              Added to the quiz prompt as house style. The rules that keep a question
+              valid are applied after it, so this cannot break generation.
             </p>
+            <input
+              value={settings.basePrompt}
+              onChange={(e) => change('basePrompt', e.target.value)}
+              maxLength={1000}
+              style={{
+                width: '100%',
+                padding: '11px 13px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                color: 'var(--color-ink)',
+                background: 'var(--color-surface-field)',
+                border: '1px solid var(--color-line-input)',
+                borderRadius: 0,
+                outline: 'none',
+              }}
+            />
           </div>
+        </Card>
 
-          {/* Section 1: Quiz Generation Settings */}
-          <div className="backdrop-blur-xl bg-slate-900/60 border border-white/10 rounded-xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-gray-100">Quiz Generation Settings</h2>
+        {saveError && <InlineMessage tone="error" style={{ marginTop: 22 }}>{saveError}</InlineMessage>}
 
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Max Questions per Quiz
-              </label>
-              <input
-                type="number"
-                value={settings.maxQuestions}
-                onChange={(e) => handleInputChange('maxQuestions', parseInt(e.target.value))}
-                className="bg-white/5 border border-white/10 text-gray-200 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Max Quiz Duration (minutes)
-              </label>
-              <input
-                type="number"
-                value={settings.maxDuration}
-                onChange={(e) => handleInputChange('maxDuration', parseInt(e.target.value))}
-                className="bg-white/5 border border-white/10 text-gray-200 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-
-          {/* Section 2: Roadmap Generation Settings */}
-          <div className="backdrop-blur-xl bg-slate-900/60 border border-white/10 rounded-xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-gray-100">Roadmap Generation Settings</h2>
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Max Modules per Roadmap
-              </label>
-              <input
-                type="number"
-                value={settings.maxModules}
-                onChange={(e) => handleInputChange('maxModules', parseInt(e.target.value))}
-                className="bg-white/5 border border-white/10 text-gray-200 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Default Roadmap Level
-              </label>
-              <select
-                value={settings.defaultLevel}
-                onChange={(e) => handleInputChange('defaultLevel', e.target.value)}
-                className="bg-white/5 border border-white/10 text-gray-200 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="Beginner">Beginner</option>
-                <option value="Intermediate">Intermediate</option>
-                <option value="Advanced">Advanced</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Section 3: AI Control Settings */}
-          <div className="backdrop-blur-xl bg-slate-900/60 border border-white/10 rounded-xl p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-gray-100">AI Control Settings</h2>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="text-sm text-gray-400">Enable AI Generation</label>
-              </div>
-              <button
-                onClick={() => handleInputChange('enableAI', !settings.enableAI)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  settings.enableAI ? 'bg-indigo-600' : 'bg-gray-700'
-                }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    settings.enableAI ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-            </div>
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Base Prompt Template
-              </label>
-              <textarea
-                value={settings.basePrompt}
-                onChange={(e) => handleInputChange('basePrompt', e.target.value)}
-                className="bg-white/5 border border-white/10 text-gray-200 rounded-lg px-4 py-2 w-full min-h-30 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-
-          {/* Save Button */}
-          <div className="flex justify-end">
-            <button
-              onClick={handleSave}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg transition"
-            >
-              Save Settings
-            </button>
-          </div>
-        </main>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 22 }}>
+          <Button onClick={handleSave} loading={saving} loadingLabel="Saving…">Save settings</Button>
+          {saved && (
+            <span style={{ fontSize: 14, color: 'var(--color-green)' }}>
+              Saved. New quizzes use these limits.
+            </span>
+          )}
+        </div>
       </div>
-    </div>
+    </AdminShell>
   );
 };
 

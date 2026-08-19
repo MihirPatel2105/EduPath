@@ -1,308 +1,277 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown, HelpCircle, Zap, ShieldCheck, BookOpen, CreditCard, UserCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { EditorialShell, Button, MicroLabel, type } from '../../design';
 
-const faqs = [
+/**
+ * Spec §7 Marketing · FAQ.
+ *
+ * Accordion rows separated by a bottom rule. The question is a 17px/500
+ * full-row button at `padding: 20px 0` with a mono + / − at the right in 14px
+ * text-3 — no chevron and no rotation, since §5 rules out both. The answer is
+ * 15px text-2 with `padding-bottom: 20px` in a 680px measure.
+ */
+const SECTIONS = [
   {
     category: 'General',
-    icon: HelpCircle,
-    color: 'indigo',
     items: [
       {
         q: 'What is EduPath?',
-        a: 'EduPath is an AI-powered career development platform that helps you build skills, take personalised assessments, generate learning roadmaps, and track your professional growth — all in one place.',
+        a: 'A career development platform that assesses where your skills are today, turns that into a week-by-week learning roadmap, then helps you build a resume and a portfolio site when you are ready to apply.',
       },
       {
-        q: 'Who is EduPath for?',
-        a: 'EduPath is designed for students, fresh graduates, and working professionals who want to identify skill gaps and follow a structured learning path towards their career goals.',
+        q: 'Who is it for?',
+        a: 'Students, recent graduates and working developers who know roughly what role they want but not what to study on Sunday night.',
       },
       {
-        q: 'Is EduPath free to use?',
-        a: 'Yes! The core features — assessments, roadmaps, and result history — are completely free. Premium features may be introduced in the future.',
+        q: 'Is it free?',
+        a: 'Yes. Assessments, roadmaps, the ATS check, the resume builder and the portfolio publisher are all free to use.',
+      },
+    ],
+  },
+  {
+    category: 'Your role',
+    items: [
+      {
+        q: 'What is a target role, and why does everything ask for it?',
+        a: 'It is the job you are working towards, and it decides three things at once: what the roadmap schedules, what the mock interview asks you about, and which topics are suggested first in the skill assessment. You choose it once during setup and nothing asks you again.',
+      },
+      {
+        q: 'Can I change my role later?',
+        a: 'Profile → Target role, at any time. Results and roadmaps are stored per role, so switching starts a clean plan for the new track and leaves the old one untouched. Switch back and your previous progress is still there.',
+      },
+      {
+        q: 'Why only six roles?',
+        a: 'Each one has a real curriculum behind it — every skill, its prerequisites, an hour estimate and links to work from. A role without that would produce a plan with nothing in it, so we would rather offer six that work than twenty that do not.',
+      },
+      {
+        q: 'What if none of the six is exactly my job title?',
+        a: 'Pick the closest. The tracks are broad — "MERN Developer" covers most JavaScript web work, "Data Science Engineer" covers analysis and reporting. The assessment then narrows the plan to what you personally are missing, which matters more than the label.',
       },
     ],
   },
   {
     category: 'Assessments',
-    icon: BookOpen,
-    color: 'cyan',
     items: [
       {
-        q: 'How does the AI assessment work?',
-        a: 'After you select a topic, our AI generates a set of multiple-choice questions tailored to that subject. Your answers are evaluated instantly, and a detailed performance report with a personalised roadmap is produced.',
+        q: 'How does the assessment work?',
+        a: 'You pick a topic and the questions are generated for that subject and level. Answers are scored immediately, and every question comes back with an explanation whether you got it right or not.',
       },
       {
-        q: 'Can I retake an assessment?',
-        a: 'Absolutely. You can retake any assessment as many times as you like. Each attempt is saved separately so you can track your progress over time.',
+        q: 'There are four of them — do they all do the same thing?',
+        a: 'No, and only some feed the plan. The Skill Assessment is the one that shapes your roadmap. Aptitude and CS Fundamentals are general reasoning and core computer science, deliberately not tied to a role, so they are practice rather than planning input. The mock interview scores how well you explain your work, which is reported beside your roadmap rather than folded into it.',
       },
       {
-        q: 'How long does an assessment take?',
-        a: 'Most assessments contain 10–15 questions and take between 5 and 15 minutes depending on the topic and your pace.',
+        q: 'What does the mock interview actually do?',
+        a: 'It asks five questions for your role, one at a time, and you answer by speaking or typing. Each answer is scored out of ten with what worked and what to fix, and the whole session ends with an overall score and a recommendation. The questions change every time.',
       },
       {
-        q: 'Are the questions different each time?',
-        a: 'Yes. Questions are dynamically generated by the AI for every new session, so you will rarely see the exact same question set twice.',
+        q: 'Does a bad score make my roadmap worse?',
+        a: 'It makes it more useful. What you get wrong is what gets scheduled first and given the most time, so a low score is information rather than a penalty. Scoring well on a topic shortens or removes it from the plan.',
+      },
+      {
+        q: 'Can I retake one?',
+        a: 'As often as you like. Every attempt is stored separately, so the history shows whether you are actually improving rather than only what you scored last.',
+      },
+      {
+        q: 'How long does one take?',
+        a: 'Most are 10 to 15 questions and run between five and fifteen minutes. There is a timer, and the quiz submits itself when it runs out.',
+      },
+      {
+        q: 'Are the questions the same every time?',
+        a: 'No. They are generated per session, so repeating a topic rarely gives you the same set twice.',
       },
     ],
   },
   {
-    category: 'AI & Roadmaps',
-    icon: Zap,
-    color: 'purple',
+    category: 'Roadmaps',
     items: [
       {
-        q: 'What is a learning roadmap?',
-        a: 'After completing an assessment, our AI analyses your results and generates a personalised, step-by-step roadmap highlighting the topics you need to focus on to reach your goal.',
+        q: 'What is in a roadmap?',
+        a: 'Every skill in your chosen track, sorted so nothing appears before its prerequisite, with a week against each one sized to the hours you said you have. Marking a skill done reschedules everything after it.',
       },
       {
-        q: 'How accurate is the AI feedback?',
-        a: 'The AI is powered by large language models fine-tuned on educational and career data. While it provides high-quality guidance, we recommend treating it as a supplement to, not a replacement for, human mentorship.',
+        q: 'Why is my roadmap so long?',
+        a: 'Because it is measured in your hours, not in calendar time. A full track from scratch is a few hundred hours of study, so at ten hours a week that is most of a year — the same material at twenty hours a week is half that. Anything you already score well on is shortened or dropped entirely, so a plan built after a few assessments is usually much shorter than the full track.',
       },
       {
-        q: 'Can I re-generate my roadmap?',
-        a: 'Yes. You can generate a new roadmap at any time by retaking the assessment or visiting your Roadmap History.',
+        q: 'What is the weekly plan?',
+        a: 'The roadmap broken into weeks. Each one lists the skills it covers, the hours it assumes, specific tasks to work through, and sometimes a small project to apply what you have just learned. A week is marked done once every skill it covers is complete.',
+      },
+      {
+        q: 'Does the learning style setting change anything?',
+        a: 'Yes — it changes the tasks in each week. Reading works through documentation and written summaries, video follows a walkthrough and then rebuilds it unaided, projects build and extend something small, and mixed balances the three. Every style ends the week with a self-assessment.',
+      },
+      {
+        q: 'How reliable is the AI?',
+        a: 'It depends which part. The roadmap itself is not AI — the order comes from a fixed dependency graph and the timings from your available hours, so it is repeatable and can always be explained. Quiz questions, the mock interview and resume parsing do use language models, which makes them specific to you and occasionally wrong. Treat those as a well-informed starting point rather than a verdict, and tell us when one is off.',
+      },
+      {
+        q: 'I took an assessment after generating my plan. Does it update itself?',
+        a: 'Not on its own, but it tells you. The roadmap shows a notice when you have been assessed since it was built, with a button to rebuild it around your latest results.',
+      },
+      {
+        q: 'Can I generate a new one?',
+        a: 'Yes, at any time. Regenerating replaces the plan for your current role only — plans for other roles are kept — and your previous roadmaps stay in the history sidebar, so replacing one does not lose it.',
       },
     ],
   },
   {
-    category: 'Account & Privacy',
-    icon: UserCircle,
-    color: 'teal',
+    category: 'Account and privacy',
     items: [
       {
-        q: 'How do I reset my password?',
-        a: 'Click "Forgot Password" on the Sign In page, enter your registered email, and a reset link will be sent to your inbox within a few minutes.',
+        q: 'How do I reset a forgotten password?',
+        a: 'Use "Forgot password" on the sign-in page. A reset link goes to your registered address and is valid for a limited time.',
       },
       {
         q: 'How do I change my password?',
-        a: 'Go to Settings from your profile menu, then select the "Security" or "Change Password" section. Enter your current password, then your new password twice to confirm. Changes take effect immediately.',
+        a: 'Settings → Change password. You need your current password, and the new one has to meet the rules shown under the field.',
+      },
+      {
+        q: 'Is my portfolio public?',
+        a: 'Yes — publishing gives it a public URL that anyone with the link can open, which is the point of having one. Nothing else in your account is public: your scores, roadmaps and assessment history are only ever visible to you.',
+      },
+      {
+        q: 'Why do I have to verify my email?',
+        a: 'Because it is the only way back into the account if you forget your password, and the only address a deletion notice can reach. Until the code is entered the account cannot be used at all.',
       },
       {
         q: 'Is my data safe?',
-        a: 'Yes. We follow industry-standard encryption practices. Your personal information and assessment data are stored securely and are never sold to third parties.',
+        a: 'Passwords are hashed rather than stored, and nothing is sold on. What we hold is your account, your attempts, your roadmaps and anything you have generated.',
       },
       {
         q: 'Can I delete my account?',
-        a: 'You can request account deletion from the Settings page. All your data will be permanently removed within 7 business days.',
+        a: 'Yes, from Settings. Deletion is immediate, not queued — your roadmaps, results, resumes and portfolios go with it. Portfolio sites you have already deployed are hosted separately and stay online until you take them down yourself.',
       },
     ],
   },
 ];
 
-const colorMap = {
-  indigo: {
-    icon: 'bg-indigo-500/15 border-indigo-400/30 text-indigo-400',
-    badge: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20',
-    open: 'border-indigo-500/40 shadow-indigo-500/10',
-    bar: 'bg-indigo-500/30',
-  },
-  cyan: {
-    icon: 'bg-cyan-500/15 border-cyan-400/30 text-cyan-400',
-    badge: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20',
-    open: 'border-cyan-500/40 shadow-cyan-500/10',
-    bar: 'bg-cyan-500/30',
-  },
-  purple: {
-    icon: 'bg-purple-500/15 border-purple-400/30 text-purple-400',
-    badge: 'bg-purple-500/10 text-purple-300 border-purple-500/20',
-    open: 'border-purple-500/40 shadow-purple-500/10',
-    bar: 'bg-purple-500/30',
-  },
-  teal: {
-    icon: 'bg-teal-500/15 border-teal-400/30 text-teal-400',
-    badge: 'bg-teal-500/10 text-teal-300 border-teal-500/20',
-    open: 'border-teal-500/40 shadow-teal-500/10',
-    bar: 'bg-teal-500/30',
-  },
-};
-
-const FAQItem = ({ q, a, color, isOpen, onToggle }) => {
-  const c = colorMap[color];
-  const contentRef = useRef(null);
-  const [height, setHeight] = useState(0);
-
-  useEffect(() => {
-    if (contentRef.current) {
-      setHeight(isOpen ? contentRef.current.scrollHeight : 0);
-    }
-  }, [isOpen]);
-
-  return (
-    <div
-      className={`rounded-xl border transition-all duration-350 ${
-        isOpen
-          ? `border-white/15 ${c.open} shadow-lg bg-white/[0.04]`
-          : 'border-white/8 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]'
-      }`}
+const Row = ({ q, a, open, onToggle }) => (
+  <div style={{ borderBottom: '1px solid var(--color-line)' }}>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      style={{
+        width: '100%',
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 24,
+        padding: '20px 0',
+        background: 'none',
+        border: 'none',
+        borderRadius: 0,
+        cursor: 'pointer',
+        textAlign: 'left',
+        fontFamily: 'var(--font-sans)',
+        fontSize: 17,
+        fontWeight: 500,
+        color: 'var(--color-ink)',
+      }}
     >
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between gap-4 px-5 py-4 text-left group"
-      >
-        <span className={`text-base font-medium leading-snug transition-colors duration-200 ${isOpen ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>
-          {q}
-        </span>
-        <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center transition-all duration-300 ${
-          isOpen ? `${c.icon} rotate-180` : 'bg-white/5 border border-white/10'
-        }`}>
-          <ChevronDown size={13} className={`transition-colors duration-200 ${isOpen ? '' : 'text-gray-500'}`} />
-        </div>
-      </button>
-
-      {/* Answer — animates to exact measured height */}
-      <div
+      <span>{q}</span>
+      <span
         style={{
-          height: `${height}px`,
-          overflow: 'hidden',
-          transition: 'height 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 14,
+          color: open ? 'var(--color-ink)' : 'var(--color-text-3)',
+          flexShrink: 0,
+          transition: 'color 120ms ease',
         }}
+        aria-hidden="true"
       >
-        <div ref={contentRef}>
-          <div className={`mx-5 mb-3 h-px ${c.bar} transition-opacity duration-300`} style={{ opacity: isOpen ? 1 : 0 }} />
-          <p
-            className="px-5 pb-5 text-base text-gray-400 leading-relaxed"
-            style={{
-              opacity: isOpen ? 1 : 0,
-              transform: isOpen ? 'translateY(0)' : 'translateY(-6px)',
-              transition: 'opacity 0.25s ease 0.1s, transform 0.25s ease 0.1s',
-            }}
-          >
-            {a}
-          </p>
-        </div>
+        {open ? '−' : '+'}
+      </span>
+    </button>
+
+    {/* The answer used to be mounted and unmounted, so it appeared and
+        vanished instantly — there is nothing for a transition to animate
+        between when the element does not exist.
+
+        It stays in the DOM now and the wrapper animates from 0fr to 1fr,
+        which resolves to the answer's own height without anyone having to
+        measure it or hard-code a max-height that would clip a long one.
+        §5 caps state changes at 120ms; opening reveals a paragraph rather
+        than recolouring a border, and at that speed it reads as a flicker,
+        so this one runs longer. Reduced motion removes it entirely via the
+        global rule in index.css. */}
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateRows: open ? '1fr' : '0fr',
+        transition: 'grid-template-rows 200ms cubic-bezier(0.3, 0, 0.2, 1)',
+      }}
+    >
+      <div style={{ overflow: 'hidden' }}>
+        <p
+          style={{
+            fontSize: 15,
+            lineHeight: 1.65,
+            color: 'var(--color-text-2)',
+            margin: 0,
+            paddingBottom: 20,
+            maxWidth: 680,
+            // Fades slightly behind the height so the text does not appear
+            // to slide up out of the row above it.
+            opacity: open ? 1 : 0,
+            transition: 'opacity 160ms ease',
+          }}
+        >
+          {a}
+        </p>
       </div>
     </div>
-  );
-};
+  </div>
+);
 
 const FAQ = () => {
-  const [openMap, setOpenMap] = useState({});
-
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add('animate-in');
-            observer.unobserve(entry.target);
-          }
-        });
-      },
-      { threshold: 0.12 }
-    );
-    document.querySelectorAll('[data-animate]').forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, []);
-
-  const toggle = (catIdx, itemIdx) => {
-    const key = `${catIdx}-${itemIdx}`;
-    setOpenMap(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  const [openKey, setOpenKey] = useState('0-0');
 
   return (
-    <div className="min-h-screen bg-black text-white pt-28 pb-24 px-4 relative overflow-hidden">
-      {/* Glow blobs */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-20 right-1/4 w-64 h-64 bg-violet-600/8 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-1/3 left-1/4 w-72 h-72 bg-cyan-600/8 rounded-full blur-3xl pointer-events-none" />
+    <EditorialShell>
+      <section style={{ padding: '80px 0 0' }}>
+        <MicroLabel size={11} tracking="0.14em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 16 }}>
+          FAQ
+        </MicroLabel>
 
-      <div className="relative z-10 max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-14">
-          <div
-            data-animate
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-sm font-medium mb-5"
-          >
-            <HelpCircle size={16} />
-            Help Center
+        <h1 style={{ ...type.marketingHeading, margin: '0 0 40px', maxWidth: 720 }}>
+          Questions people actually ask.
+        </h1>
+
+        {SECTIONS.map((section, si) => (
+          <div key={section.category} style={{ marginBottom: 40 }}>
+            <MicroLabel size={11} tracking="0.14em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 8 }}>
+              {section.category}
+            </MicroLabel>
+
+            <div style={{ borderTop: '1px solid var(--color-ink)' }}>
+              {section.items.map((item, ii) => {
+                const key = `${si}-${ii}`;
+                return (
+                  <Row
+                    key={key}
+                    q={item.q}
+                    a={item.a}
+                    open={openKey === key}
+                    onToggle={() => setOpenKey(openKey === key ? null : key)}
+                  />
+                );
+              })}
+            </div>
           </div>
-          <h1 data-animate style={{transitionDelay: '0.1s'}} className="text-5xl md:text-6xl font-extrabold mb-4">
-            Frequently Asked{' '}
-            <span
-              style={{
-                background: 'linear-gradient(90deg,#818cf8,#38bdf8)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-              }}
-            >
-              Questions
-            </span>
-          </h1>
-          <p data-animate style={{transitionDelay: '0.2s'}} className="text-gray-400 text-lg max-w-xl mx-auto leading-relaxed">
-            Can't find an answer? Reach out via the{' '}
-            <a href="/contact" className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors">
-              Contact Us
-            </a>{' '}
-            page and we'll get back to you within 24 hours.
-          </p>
-        </div>
+        ))}
+      </section>
 
-        {/* FAQ sections */}
-        <div className="space-y-10">
-          {faqs.map((section, catIdx) => {
-            const c = colorMap[section.color];
-            const Icon = section.icon;
-            return (
-              <div key={catIdx}>
-                {/* Section header */}
-                <div
-                  data-animate
-                  style={{ transitionDelay: `${catIdx * 0.08}s` }}
-                  className="flex items-center gap-3 mb-4"
-                >
-                  <div className={`w-10 h-10 rounded-lg border flex items-center justify-center ${c.icon}`}>
-                    <Icon size={18} />
-                  </div>
-                  <span className={`text-sm font-semibold px-3 py-1 rounded-full border ${c.badge}`}>
-                    {section.category}
-                  </span>
-                  <div className="flex-1 h-px bg-white/5" />
-                </div>
-
-                {/* Items */}
-                <div className="space-y-2.5">
-                  {section.items.map((item, itemIdx) => (
-                    <div
-                      key={itemIdx}
-                      data-animate
-                      style={{ transitionDelay: `${catIdx * 0.08 + itemIdx * 0.07}s` }}
-                    >
-                      <FAQItem
-                        q={item.q}
-                        a={item.a}
-                        color={section.color}
-                        isOpen={!!openMap[`${catIdx}-${itemIdx}`]}
-                        onToggle={() => toggle(catIdx, itemIdx)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Bottom CTA */}
-        <div
-          data-animate
-          className="mt-14 text-center backdrop-blur-xl bg-white/[0.03] border border-white/10 rounded-2xl p-8"
-        >
-          <p className="text-white font-semibold text-lg mb-1">Still have questions?</p>
-          <p className="text-gray-400 text-sm mb-5">Our team is happy to help you out.</p>
-          <a
-            href="/contact"
-            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium text-white transition-all duration-200 hover:scale-105 active:scale-95"
-            style={{
-              background: 'linear-gradient(135deg, rgba(99,102,241,0.7), rgba(139,92,246,0.7))',
-              border: '1px solid rgba(139,92,246,0.35)',
-              boxShadow: '0 0 20px rgba(99,102,241,0.25)',
-            }}
-          >
-            Contact Us
-          </a>
-        </div>
-      </div>
-    </div>
+      <section style={{ padding: '0 0 80px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 32, flexWrap: 'wrap' }}>
+        <p style={{ ...type.body, margin: 0, maxWidth: 460 }}>
+          Not answered here? The contact form reaches a person, not a queue.
+        </p>
+        <Link to="/contact" style={{ textDecoration: 'none', flexShrink: 0 }}>
+          <Button>Ask us</Button>
+        </Link>
+      </section>
+    </EditorialShell>
   );
 };
 

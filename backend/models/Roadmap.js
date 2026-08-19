@@ -39,6 +39,14 @@ const WeeklyPlanSchema = new mongoose.Schema(
         week_number: { type: Number, required: true },
         skills: [{ type: String }],
         tasks: [{ type: String }],
+        // Indices into `tasks`, rather than reshaping tasks into objects.
+        //
+        // Tasks are generated as plain strings and every roadmap already
+        // stored is that shape; changing it would have meant migrating them or
+        // carrying both forms. Indices are stable within a saved roadmap
+        // because regeneration writes a new document rather than editing this
+        // one — the old plan is kept in history untouched.
+        completed_tasks: [{ type: Number }],
         estimated_hours: { type: Number },
         mini_project: {
             title: String,
@@ -68,6 +76,17 @@ const RoadmapSchema = new mongoose.Schema(
         },
         total_duration_weeks: { type: Number },
         hours_per_week: { type: Number },
+        /**
+         * The day week 1 begins, which is what makes this a schedule.
+         *
+         * Kept separate from createdAt because they stop agreeing the moment
+         * a plan is rebuilt: adapting a roadmap carries progress onto a new
+         * document, and the learner did not go back to week one by doing it.
+         */
+        started_at: { type: Date, default: Date.now },
+        /** When every week was finished. Null until then, and cleared again
+         *  if work reappears. */
+        completed_at: { type: Date, default: null },
         skills: [SkillNodeSchema],
         weekly_plans: [WeeklyPlanSchema],
         version: { type: Number, default: 1 },
@@ -87,7 +106,13 @@ const RoadmapSchema = new mongoose.Schema(
 );
 
 RoadmapSchema.index({ user_id: 1, status: 1 });
-RoadmapSchema.index({ roadmap_id: 1 });
+
+// No index on roadmap_id here. `unique: true` on the field already declares
+// one, and declaring it a second time built two indexes over the same key —
+// which is what Mongoose warned about on every boot. The field keeps the
+// constraint; only the redundant copy is gone. Removing `unique: true` instead
+// would have silenced the same warning while quietly dropping the guarantee
+// that two roadmaps cannot share an id.
 
 const Roadmap = mongoose.model("Roadmap", RoadmapSchema);
 

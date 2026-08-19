@@ -1,5 +1,12 @@
 import User from '../models/userModel.js';
 import cloudinary from '../config/cloudinaryConfig.js';
+import { CAREER_ROLES, isCareerRole } from '../utils/careerRoles.js';
+import { LEARNING_STYLES, isLearningStyle } from '../utils/learningStyles.js';
+import InterviewResult from '../models/InterviewResult.js';
+import PracticeResult from '../models/PracticeResult.js';
+import GeneratedResume from '../models/GeneratedResume.js';
+import Portfolio from '../models/Portfolio.js';
+import AtsAnalysis from '../models/AtsAnalysis.js';
 
 const normalizeExperienceLevel = (value) => {
   if (!value) {
@@ -48,8 +55,6 @@ const normalizeCurrentSkills = (value) => {
 const syncRoadmapProfileState = (user, updates) => {
   if (updates.target_role !== undefined) {
     user.target_role = updates.target_role;
-    user.profile = user.profile || {};
-    user.profile.targetRole = updates.target_role;
   }
 
   if (updates.experience_level !== undefined) {
@@ -115,8 +120,10 @@ export const getProfile = async (req, res) => {
         learning_style: user.learning_style || '',
         current_skills: user.current_skills || [],
         profile_complete: Boolean(user.profile_complete),
+        tour_seen: Boolean(user.tour_seen_at),
         profilePicture: user.profile?.avatar || '',
-        loginId: user.loginId || ''
+        loginId: user.loginId || '',
+        weekly_email: Boolean(user.weeklyEmail?.enabled)
       }
     });
   } catch (error) {
@@ -134,7 +141,18 @@ export const getProfile = async (req, res) => {
 // @access  Private
 export const updateProfile = async (req, res) => {
   try {
-    const { firstName, lastName, phone, skills, role } = req.body;
+    const {
+      firstName,
+      lastName,
+      phone,
+      skills,
+      role,
+      target_role,
+      experience_level,
+      hours_per_week,
+      learning_style,
+      current_skills,
+    } = req.body;
 
     const user = await User.findById(req.user._id);
 
@@ -153,19 +171,65 @@ export const updateProfile = async (req, res) => {
       });
     }
 
-    // Validate role if provided
-    const validRoles = ['student', 'developer', 'other', 'admin', 'teacher', 'manager', 'entrepreneur', 'instructor'];
-    if (role && !validRoles.includes(role)) {
+    // The account role is what isAdmin checks, and this endpoint is reachable
+    // by any signed-in user — so accepting `role` here let anyone hand
+    // themselves the admin dashboard by posting {"role":"admin"}. It is now
+    // read-only from the profile; changing it is an admin/seed operation.
+    //
+    // Echoing the current value back is still allowed, so older clients that
+    // send the whole profile object keep working.
+    if (role !== undefined && role !== user.role) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account role cannot be changed from the profile.'
+      });
+    }
+
+    // target_role is the career track the roadmap is built from. Only the
+    // roles the AI service has a curriculum for are accepted; '' means the
+    // user has not chosen yet.
+    if (target_role !== undefined && target_role !== '' && !isCareerRole(target_role)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid role selected'
+        message: `Target role must be one of: ${CAREER_ROLES.join(', ')}`
+      });
+    }
+
+    // These are reported in the response below, so accept them here too. They
+    // used to be dropped silently while the endpoint still answered 200, which
+    // made a failed update indistinguishable from a successful one.
+    // The AI service falls back to "mixed" for a style it does not recognise,
+    // so an unchecked value would look like the setting simply did nothing.
+    if (learning_style !== undefined && learning_style !== '' && !isLearningStyle(learning_style)) {
+      return res.status(400).json({
+        success: false,
+        message: `Learning style must be one of: ${LEARNING_STYLES.join(', ')}`
+      });
+    }
+
+    const validExperienceLevels = ['beginner', 'intermediate', 'advanced'];
+    if (experience_level !== undefined && !validExperienceLevels.includes(experience_level)) {
+      return res.status(400).json({
+        success: false,
+        message: `Experience level must be one of: ${validExperienceLevels.join(', ')}`
+      });
+    }
+
+    if (hours_per_week !== undefined && (!Number.isFinite(Number(hours_per_week)) || Number(hours_per_week) < 1)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hours per week must be a number of at least 1'
       });
     }
 
     // Update root level fields
     if (firstName !== undefined) user.firstName = firstName;
     if (lastName !== undefined) user.lastName = lastName;
-    if (role !== undefined) user.role = role;
+    if (target_role !== undefined) user.target_role = target_role;
+    if (experience_level !== undefined) user.experience_level = experience_level;
+    if (hours_per_week !== undefined) user.hours_per_week = Number(hours_per_week);
+    if (learning_style !== undefined) user.learning_style = learning_style;
+    if (current_skills !== undefined) user.current_skills = current_skills;
 
     // Update profile nested fields
     if (!user.profile) {
@@ -203,6 +267,7 @@ export const updateProfile = async (req, res) => {
         learning_style: updatedUser.learning_style || '',
         current_skills: updatedUser.current_skills || [],
         profile_complete: Boolean(updatedUser.profile_complete),
+        tour_seen: Boolean(updatedUser.tour_seen_at),
         profilePicture: '', // Not stored in MongoDB, only in Cloudinary
         loginId: updatedUser.loginId
       }
@@ -222,7 +287,7 @@ export const updateProfile = async (req, res) => {
 // @access  Private
 export const updateSettings = async (req, res) => {
   try {
-    const { theme, language, notificationEnabled } = req.body;
+    const { theme, language, notificationEnabled, weeklyEmail } = req.body;
 
     const user = await User.findById(req.user._id);
 
@@ -237,6 +302,11 @@ export const updateSettings = async (req, res) => {
     if (theme !== undefined) user.theme = theme;
     if (language !== undefined) user.language = language;
     if (notificationEnabled !== undefined) user.notificationEnabled = notificationEnabled;
+    // Only the flag is writable — lastSentAt is the job's bookkeeping and a
+    // client that could set it could suppress its own next email.
+    if (typeof weeklyEmail?.enabled === 'boolean') {
+      user.weeklyEmail = { ...(user.weeklyEmail || {}), enabled: weeklyEmail.enabled };
+    }
 
     await user.save();
 
@@ -246,7 +316,8 @@ export const updateSettings = async (req, res) => {
       data: {
         theme: user.theme,
         language: user.language,
-        notificationEnabled: user.notificationEnabled
+        notificationEnabled: user.notificationEnabled,
+        weeklyEmail: { enabled: user.weeklyEmail?.enabled ?? false }
       }
     });
   } catch (error) {
@@ -388,6 +459,16 @@ export const updateSkills = async (req, res) => {
   try {
     const { target_role, experience_level, current_skills } = req.body;
 
+    // Validated here as well as in updateProfile: this is a separate write
+    // path into the same field, and without the check an unsupported role
+    // would surface as a 500 from the model's enum rather than a 400.
+    if (target_role !== undefined && target_role !== '' && !isCareerRole(target_role)) {
+      return res.status(400).json({
+        success: false,
+        message: `Target role must be one of: ${CAREER_ROLES.join(', ')}`
+      });
+    }
+
     // Check if profile is now complete
     const user = await User.findById(req.user._id);
     if (!user) {
@@ -404,12 +485,45 @@ export const updateSkills = async (req, res) => {
   }
 };
 
+// @desc    Record that the first-run tour has been dismissed
+// @route   PUT /api/profile/tour-seen
+// @access  Private
+//
+// Deliberately its own route rather than a field on updateProfile: dismissing
+// a tour should not run the whole profile validation path, and it must still
+// succeed for an account part-way through setup.
+export const markTourSeen = async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { tour_seen_at: new Date() } },
+      { new: true }
+    ).select('tour_seen_at');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    res.status(200).json({ success: true, data: { tour_seen: true } });
+  } catch (err) {
+    console.error('Mark tour seen error:', err);
+    res.status(500).json({ success: false, message: 'Failed to record tour state' });
+  }
+};
+
 // @desc    Update learning availability
 // @route   PUT /api/profile/availability
 // @access  Private
 export const updateAvailability = async (req, res) => {
   try {
     const { hours_per_week, learning_style } = req.body;
+
+    if (learning_style !== undefined && learning_style !== '' && !isLearningStyle(learning_style)) {
+      return res.status(400).json({
+        success: false,
+        message: `Learning style must be one of: ${LEARNING_STYLES.join(', ')}`
+      });
+    }
 
     const user = await User.findById(req.user._id);
     if (!user) {
@@ -423,5 +537,76 @@ export const updateAvailability = async (req, res) => {
     res.status(200).json({ success: true, data: updated });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /api/profile/activity — a one-line state for each part of the product
+ * the Overview does not otherwise mention.
+ *
+ * The Overview is the page called "Overview" and it covered two of the six
+ * things a learner can do here: assessments and the roadmap. Mock interviews,
+ * coding practice, the resume and the portfolio were each their own island —
+ * you could finish a mock interview and nothing anywhere else would know it
+ * had happened.
+ *
+ * Deliberately small. This is a summary that says whether a thing has been
+ * started and how it went, not a second copy of each feature's own screen.
+ * One request rather than four so the page still paints in one pass.
+ */
+export const getActivitySummary = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const [interviews, practice, resumes, portfolio, ats] = await Promise.all([
+      InterviewResult.find({ userId }).sort({ createdAt: -1 }).select('role overallScore createdAt').lean(),
+      PracticeResult.find({ userId }).sort({ createdAt: -1 }).select('total correct createdAt').lean(),
+      GeneratedResume.find({ userId }).sort({ updatedAt: -1 }).select('version updatedAt').lean(),
+      Portfolio.findOne({ userId }).sort({ updatedAt: -1 }).select('username updatedAt').lean(),
+      // Added when the ATS check learned to keep its results. The card listed
+      // every other thing a learner can do here and quietly omitted this one.
+      AtsAnalysis.find({ userId }).sort({ createdAt: -1 }).select('score createdAt').lean(),
+    ]);
+
+    // Accuracy across every practice session rather than the last one — a
+    // single session is too small a sample to describe as a rate.
+    const attempted = practice.reduce((sum, p) => sum + (p.total || 0), 0);
+    const correct = practice.reduce((sum, p) => sum + (p.correct || 0), 0);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        interview: {
+          count: interviews.length,
+          lastScore: interviews[0]?.overallScore ?? null,
+          lastRole: interviews[0]?.role ?? null,
+          lastAt: interviews[0]?.createdAt ?? null,
+        },
+        practice: {
+          sessions: practice.length,
+          attempted,
+          correct,
+          accuracy: attempted ? Math.round((correct / attempted) * 100) : null,
+          lastAt: practice[0]?.createdAt ?? null,
+        },
+        resume: {
+          versions: resumes.length,
+          lastAt: resumes[0]?.updatedAt ?? null,
+        },
+        ats: {
+          count: ats.length,
+          lastScore: ats[0]?.score ?? null,
+          lastAt: ats[0]?.createdAt ?? null,
+        },
+        portfolio: {
+          exists: Boolean(portfolio),
+          username: portfolio?.username ?? null,
+          lastAt: portfolio?.updatedAt ?? null,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('getActivitySummary error:', err);
+    return res.status(500).json({ success: false, message: 'Server error.', error: err.message });
   }
 };

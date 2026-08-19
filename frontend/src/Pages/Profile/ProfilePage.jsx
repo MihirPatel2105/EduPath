@@ -1,8 +1,81 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Settings as SettingsIcon, Save, ArrowLeft, ChevronDown, X, ZoomIn, ZoomOut, FileText } from 'lucide-react';
 import { getProfile, updateProfile, uploadProfilePicture } from '../Services/profileService';
 import { getProfilePictureUrl } from '../../utils/cloudinaryHelper';
+import {
+  LearnerShell, Card, Button, Input, InlineMessage, MicroLabel,
+  Avatar, Badge, Modal, PhoneInput,
+} from '../../design';
+import { learnerNav, sessionInitials, sessionName, sessionLoginId } from '../../design/nav';
+import { useCareerRoles } from '../../hooks/useCareerRoles';
+
+/** current_skills entries are either plain strings or { skill, level } objects. */
+const toSkillList = (value) =>
+  (Array.isArray(value) ? value : [])
+    .map((item) => (typeof item === 'string' ? item : item?.skill))
+    .map((skill) => String(skill || '').trim())
+    .filter(Boolean);
+
+/**
+ * Spec §7 Profile.
+ *
+ * Centred 860px, one card: a 28px/30px header with a 60 × 60px navy square,
+ * a Newsreader 30px name and a 14.5px meta line, with a secondary action
+ * right; a three-cell stat strip at 18px 30px; then a mono section label above
+ * one bordered group whose rows are 17px 20px, each a title plus detail on the
+ * left and its control on the right.
+ *
+ * The spec's row controls are steppers and toggles because its profile is a
+ * preferences screen. This one edits identity, so most rows carry the field
+ * they describe. The photo crop is square rather than circular — nothing in
+ * this design system is round.
+ */
+
+const ROW = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 24,
+  // The control used to be a hard 300px beside the label. On a phone that is
+  // wider than the row, so the pair wraps and the control takes the line.
+  flexWrap: 'wrap',
+  padding: '17px 20px',
+  borderBottom: '1px solid var(--color-line-soft)',
+};
+
+const Row = ({ title, detail, titleTone, children, last = false }) => (
+  <div style={{ ...ROW, borderBottom: last ? 'none' : ROW.borderBottom }}>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 15.5, fontWeight: 500, color: titleTone || 'var(--color-ink)' }}>{title}</div>
+      {detail && <div style={{ fontSize: 14, color: 'var(--color-text-3)', marginTop: 3 }}>{detail}</div>}
+    </div>
+    <div style={{ flex: '1 1 260px', maxWidth: 300, minWidth: 0 }}>{children}</div>
+  </div>
+);
+
+const ZOOM_CELL = {
+  border: '1px solid var(--color-line-btn)',
+  background: '#fff',
+  padding: '8px 12px',
+  cursor: 'pointer',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 13,
+  color: 'var(--color-ink)',
+  lineHeight: 1,
+  borderRadius: 0,
+};
+
+const SELECT_STYLE = {
+  width: '100%',
+  padding: '11px 14px',
+  fontSize: 15,
+  fontFamily: 'var(--font-sans)',
+  color: 'var(--color-ink)',
+  background: '#fff',
+  border: '1px solid var(--color-line-input)',
+  borderRadius: 0,
+  outline: 'none',
+};
 
 const ProfilePage = () => {
   const navigate = useNavigate();
@@ -23,6 +96,8 @@ const ProfilePage = () => {
   const imageRef = useRef(null);
 
   // Profile Data
+  const { roles: careerRoles } = useCareerRoles();
+
   const [profileData, setProfileData] = useState({
     firstName: '',
     lastName: '',
@@ -30,6 +105,10 @@ const ProfilePage = () => {
     phone: '',
     skills: '',
     role: 'student',
+    target_role: '',
+    experience_level: '',
+    hours_per_week: '',
+    learning_style: 'mixed',
     profilePicture: ''
   });
 
@@ -45,44 +124,35 @@ const ProfilePage = () => {
     loadProfileDataFromBackend();
   }, [navigate]);
 
-  // Scroll-in animations
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add('animate-in');
-            observer.unobserve(entry.target);
-          }
-        });
-      },
-      { threshold: 0.12 }
-    );
-    document.querySelectorAll('[data-animate]').forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, []);
-
   const loadProfileDataFromBackend = async () => {
     try {
       setLoading(true);
       const response = await getProfile();
-      
+
       if (response.success) {
         const profile = response.data;
-        
+
         // Get userId from sessionStorage to construct Cloudinary URL
         const userId = sessionStorage.getItem('userId');
-        const profilePictureUrl = sessionStorage.getItem('profilePicture') || 
+        const profilePictureUrl = sessionStorage.getItem('profilePicture') ||
                                   (userId ? getProfilePictureUrl(userId) : '');
-        
+
         // Update state
         setProfileData({
           firstName: profile.firstName || '',
           lastName: profile.lastName || '',
           email: profile.email || '',
           phone: profile.phone || '',
-          skills: profile.skills || '',
+          // These two held the same idea in different shapes and had already
+          // drifted, so the field falls back to whichever actually has data.
+          // Without this, saving a profile whose display string was empty
+          // would wipe the skills the roadmap reads.
+          skills: profile.skills || toSkillList(profile.current_skills).join(', '),
           role: profile.role || 'student',
+          target_role: profile.target_role || '',
+          experience_level: profile.experience_level || '',
+          hours_per_week: profile.hours_per_week ? String(profile.hours_per_week) : '',
+          learning_style: profile.learning_style || 'mixed',
           profilePicture: profilePictureUrl
         });
 
@@ -93,9 +163,11 @@ const ProfilePage = () => {
         sessionStorage.setItem('phone', profile.phone || '');
         sessionStorage.setItem('skills', profile.skills || '');
         sessionStorage.setItem('role', profile.role || 'student');
+        sessionStorage.setItem('targetRole', profile.target_role || '');
+        sessionStorage.setItem('profileComplete', profile.profile_complete ? '1' : '0');
         sessionStorage.setItem('profilePicture', profilePictureUrl);
         sessionStorage.setItem('loginId', profile.loginId || '');
-        
+
         // Notify other components that sessionStorage has been updated
         window.dispatchEvent(new Event('sessionStorageUpdated'));
       }
@@ -108,12 +180,13 @@ const ProfilePage = () => {
       const phone = sessionStorage.getItem('phone') || '';
       const skills = sessionStorage.getItem('skills') || '';
       const role = sessionStorage.getItem('role') || 'student';
+      const target_role = sessionStorage.getItem('targetRole') || '';
       const userId = sessionStorage.getItem('userId');
-      const profilePicture = sessionStorage.getItem('profilePicture') || 
+      const profilePicture = sessionStorage.getItem('profilePicture') ||
                             (userId ? getProfilePictureUrl(userId) : '');
 
-      setProfileData({ firstName, lastName, email, phone, skills, role, profilePicture });
-      
+      setProfileData({ firstName, lastName, email, phone, skills, role, target_role, profilePicture });
+
       setError('Could not load profile from server');
       setTimeout(() => setError(''), 3000);
     } finally {
@@ -123,7 +196,7 @@ const ProfilePage = () => {
 
   const handleProfileChange = (e) => {
     const { name, value } = e.target;
-    
+
     // For phone field, only allow numbers
     if (name === 'phone') {
       const numericValue = value.replace(/[^0-9]/g, '');
@@ -174,60 +247,48 @@ const ProfilePage = () => {
 
     if (!image) return;
 
-    // Set canvas size for circular crop
+    // Square crop — the avatar is a square everywhere in this design system.
     const size = 300;
     canvas.width = size;
     canvas.height = size;
-
-    // Clear canvas
     ctx.clearRect(0, 0, size, size);
 
-    // Create circular clipping path
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.clip();
-
-    // Calculate image dimensions and position
     const scaledWidth = image.width * imageScale;
     const scaledHeight = image.height * imageScale;
     const x = (size - scaledWidth) / 2 + imagePosition.x;
     const y = (size - scaledHeight) / 2 + imagePosition.y;
 
-    // Draw image
     ctx.drawImage(image, x, y, scaledWidth, scaledHeight);
-    ctx.restore();
 
     // Get the cropped image as data URL
     const croppedImage = canvas.toDataURL('image/png');
-    
+
     // Upload to Cloudinary
     setUploadingPicture(true);
     setError('');
-    
+
     try {
       const response = await uploadProfilePicture(croppedImage);
-      
+
       if (response.success) {
         // Update profile data with Cloudinary URL
         setProfileData(prev => ({
           ...prev,
           profilePicture: response.data.profilePicture
         }));
-        
+
         // Reset image load error since we have a new valid image
         setImageLoadError(false);
-        
+
         // Update sessionStorage
         sessionStorage.setItem('profilePicture', response.data.profilePicture);
-        
+
         // Notify other components that sessionStorage has been updated
         window.dispatchEvent(new Event('sessionStorageUpdated'));
-        
-        setMessage('Profile picture updated successfully!');
+
+        setMessage('Profile picture updated');
         setTimeout(() => setMessage(''), 3000);
-        
+
         // Close editor
         setShowImageEditor(false);
         setTempImage(null);
@@ -248,7 +309,8 @@ const ProfilePage = () => {
     setImagePosition({ x: 0, y: 0 });
     setIsDragging(false);
     // Reset file input
-    document.getElementById('profile-picture-input').value = '';
+    const input = document.getElementById('profile-picture-input');
+    if (input) input.value = '';
   };
 
   const handleMouseDown = (e) => {
@@ -261,10 +323,10 @@ const ProfilePage = () => {
 
   const handleMouseMove = (e) => {
     if (!isDragging) return;
-    
+
     const newX = e.clientX - dragStart.x;
     const newY = e.clientY - dragStart.y;
-    
+
     setImagePosition({ x: newX, y: newY });
   };
 
@@ -272,21 +334,10 @@ const ProfilePage = () => {
     setIsDragging(false);
   };
 
-  useEffect(() => {
-    if (tempImage && showImageEditor) {
-      const img = new Image();
-      img.onload = () => {
-        imageRef.current = img;
-        drawPreview();
-      };
-      img.src = tempImage;
-    }
-  }, [tempImage, showImageEditor, imageScale, imagePosition]);
-
-  const drawPreview = () => {
+  const drawPreview = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
+
     const ctx = canvas.getContext('2d');
     const image = imageRef.current;
     if (!image) return;
@@ -295,37 +346,33 @@ const ProfilePage = () => {
     canvas.width = size;
     canvas.height = size;
 
-    // Clear canvas
     ctx.clearRect(0, 0, size, size);
-
-    // Draw background
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#F4F2ED';
     ctx.fillRect(0, 0, size, size);
 
-    // Create circular clipping path
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.clip();
-
-    // Calculate image dimensions and position
     const scaledWidth = image.width * imageScale;
     const scaledHeight = image.height * imageScale;
     const x = (size - scaledWidth) / 2 + imagePosition.x;
     const y = (size - scaledHeight) / 2 + imagePosition.y;
 
-    // Draw image
     ctx.drawImage(image, x, y, scaledWidth, scaledHeight);
-    ctx.restore();
+  }, [imageScale, imagePosition]);
 
-    // Draw circle border
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-    ctx.strokeStyle = '#4f46e5';
-    ctx.lineWidth = 3;
-    ctx.stroke();
-  };
+  // Redraws the crop preview whenever the picture, the zoom or the drag
+  // position changes. drawPreview reads imageScale and imagePosition, so it
+  // has to be a dependency rather than a function captured on first render —
+  // otherwise dragging or zooming repaints the canvas using the values from
+  // whenever the editor was opened.
+  useEffect(() => {
+    if (!tempImage || !showImageEditor) return;
+
+    const img = new Image();
+    img.onload = () => {
+      imageRef.current = img;
+      drawPreview();
+    };
+    img.src = tempImage;
+  }, [tempImage, showImageEditor, drawPreview]);
 
   const handleImageClick = () => {
     document.getElementById('profile-picture-input').click();
@@ -338,24 +385,49 @@ const ProfilePage = () => {
     setMessage('');
 
     try {
-      const response = await updateProfile({
+      // `role` is deliberately not sent: it is the account's permission level,
+      // not something the profile owns, and the API rejects changes to it.
+      //
+      // `skills` and `current_skills` are the same list in two shapes — a
+      // display string and the array the roadmap reads — so both are written
+      // from the one field rather than letting them drift apart.
+      const payload = {
         firstName: profileData.firstName,
         lastName: profileData.lastName,
         phone: profileData.phone,
         skills: profileData.skills,
-        role: profileData.role
-      });
+        current_skills: profileData.skills
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        target_role: profileData.target_role,
+        learning_style: profileData.learning_style,
+      };
+
+      // Only sent when set: the API rejects an empty experience level or a
+      // zero hours-per-week, and a profile part-way through setup should
+      // still be savable.
+      if (profileData.experience_level) payload.experience_level = profileData.experience_level;
+      if (Number(profileData.hours_per_week) > 0) payload.hours_per_week = Number(profileData.hours_per_week);
+
+      const response = await updateProfile(payload);
 
       if (response.success) {
-        setMessage('Profile updated successfully!');
-        
+        setMessage('Profile updated');
+
         // Update sessionStorage with the returned data
         const updatedProfile = response.data;
         sessionStorage.setItem('firstName', updatedProfile.firstName || profileData.firstName);
         sessionStorage.setItem('lastName', updatedProfile.lastName || profileData.lastName);
-        sessionStorage.setItem('phone', updatedProfile.phone || profileData.phone);
-        sessionStorage.setItem('skills', updatedProfile.skills || profileData.skills);
-        sessionStorage.setItem('role', updatedProfile.role || profileData.role);
+        // `??`, not `||`: phone and skills can legitimately be cleared, and
+        // `||` treated an empty string as "nothing came back" and restored the
+        // old value. Deleting your number left it in the session, which the
+        // contact form now reads to prefill itself — you would have to delete
+        // it a second time, somewhere else.
+        sessionStorage.setItem('phone', updatedProfile.phone ?? profileData.phone);
+        sessionStorage.setItem('skills', updatedProfile.skills ?? profileData.skills);
+        sessionStorage.setItem('targetRole', updatedProfile.target_role ?? profileData.target_role);
+        sessionStorage.setItem('profileComplete', updatedProfile.profile_complete ? '1' : '0');
 
         setTimeout(() => setMessage(''), 3000);
       }
@@ -369,371 +441,299 @@ const ProfilePage = () => {
     }
   };
 
-  const fullName = `${profileData.firstName} ${profileData.lastName}`.trim() || 'Your Name';
-  const firstLetter = profileData.firstName?.charAt(0)?.toUpperCase() || 'U';
+  const fullName = `${profileData.firstName} ${profileData.lastName}`.trim() || 'Your name';
+  const initials = `${profileData.firstName.charAt(0)}${profileData.lastName.charAt(0)}`.trim()
+    || sessionInitials();
+  const loginId = sessionStorage.getItem('loginId') || '—';
+  const skillCount = profileData.skills
+    ? profileData.skills.split(',').map((s) => s.trim()).filter(Boolean).length
+    : 0;
+
+  const stats = [
+    { label: 'Login ID', value: loginId, mono: true },
+    { label: 'Target role', value: profileData.target_role || 'Not set' },
+    { label: 'Skills listed', value: skillCount },
+  ];
 
   return (
-    <div className="min-h-screen bg-black pt-32 pb-20 px-8 relative overflow-hidden flex flex-col justify-center">
-      {/* Profile page background — subtle grid + slow drifting orbs */}
-      <div className="pointer-events-none fixed inset-0 z-0">
-        <div style={{
-          position: 'absolute', inset: 0,
-          backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.1) 1px, transparent 1px)',
-          backgroundSize: '36px 36px',
-        }} />
-        <div style={{
-          position: 'absolute', top: '8%', left: '10%',
-          width: 420, height: 420,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(99,102,241,0.05), transparent 70%)',
-          animation: 'profileOrb1 18s ease-in-out infinite alternate',
-        }} />
-        <div style={{
-          position: 'absolute', bottom: '10%', right: '8%',
-          width: 360, height: 360,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.04), transparent 70%)',
-          animation: 'profileOrb2 22s ease-in-out infinite alternate',
-        }} />
-        <div style={{
-          position: 'absolute', top: '45%', right: '20%',
-          width: 260, height: 260,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(56,189,248,0.03), transparent 70%)',
-          animation: 'profileOrb1 26s ease-in-out infinite alternate-reverse',
-        }} />
-      </div>
-      <style>{`
-        @keyframes profileOrb1 {
-          from { transform: translate(0, 0) scale(1); }
-          to   { transform: translate(40px, 30px) scale(1.08); }
-        }
-        @keyframes profileOrb2 {
-          from { transform: translate(0, 0) scale(1); }
-          to   { transform: translate(-35px, -25px) scale(1.06); }
-        }
-      `}</style>
+    <LearnerShell
+      sections={learnerNav}
+      eyebrow="Account"
+      title="Profile"
+      note={sessionName()}
+      initials={sessionInitials()}
+      footLabel={sessionLoginId()}
+    >
+      <div style={{ maxWidth: 860, margin: '0 auto', width: '100%' }}>
+        {message && <InlineMessage tone="success" style={{ marginBottom: 22 }}>{message}</InlineMessage>}
+        {error && <InlineMessage tone="error" style={{ marginBottom: 22 }}>{error}</InlineMessage>}
 
-      <div className="max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 relative z-10 items-start">
-        {/* Left Column (Spans 4 Columns) */}
-        <div className="lg:col-span-4 flex flex-col gap-6">
-          <div data-animate className="mb-6 flex items-center gap-4" style={{transitionDelay: '0s'}}>
-            <button
-              onClick={() => navigate('/')}
-              className="p-2.5 backdrop-blur-lg bg-white/[0.03] hover:bg-white/[0.1] rounded-xl transition-all border border-white/5"
-            >
-              <ArrowLeft size={20} className="text-gray-400" />
-            </button>
-            <div>
-              <h1 className="text-3xl font-black text-white leading-none tracking-tight">Profile</h1>
-              <p className="text-slate-400 text-sm mt-1">Manage your account settings</p>
-            </div>
-          </div>
+        <Card>
+          {/* Header */}
+          <div
+            style={{
+              padding: '28px 30px',
+              borderBottom: '1px solid var(--color-line)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 20,
+            }}
+          >
+            <input
+              type="file"
+              id="profile-picture-input"
+              accept="image/*"
+              onChange={handleImageUpload}
+              style={{ display: 'none' }}
+            />
 
-          {/* Success/Error Messages */}
-          {message && (
-            <div className="mb-4 backdrop-blur-lg bg-green-500/10 border border-green-500/30 text-green-400 px-5 py-3 rounded-xl font-medium shadow-xl text-sm">
-              {message}
-            </div>
-          )}
-          {error && (
-            <div className="mb-4 backdrop-blur-lg bg-red-500/10 border border-red-500/30 text-red-400 px-5 py-3 rounded-xl font-medium shadow-xl text-sm">
-              {error}
-            </div>
-          )}
-
-          {/* Profile Card */}
-          <div data-animate className="backdrop-blur-xl bg-[#0a0a0a]/80 rounded-[2rem] p-8 border border-white/5 transition-all shadow-xl flex flex-col items-center" style={{transitionDelay: '0.1s'}}>
-            <div className="relative inline-block mb-5 group">
-              <input
-                type="file"
-                id="profile-picture-input"
-                accept="image/*"
-                onChange={handleImageUpload}
-                className="hidden"
+            {profileData.profilePicture && !imageLoadError ? (
+              <img
+                src={profileData.profilePicture}
+                alt=""
+                onError={() => setImageLoadError(true)}
+                onLoad={() => setImageLoadError(false)}
+                style={{ width: 60, height: 60, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--color-line)' }}
               />
-              {profileData.profilePicture && !imageLoadError ? (
-                <div className="w-28 h-28 rounded-full p-1 bg-gradient-to-br from-indigo-500/40 to-violet-500/40 backdrop-blur-sm">
-                  <img
-                    src={profileData.profilePicture}
-                    alt="Profile"
-                    className="w-full h-full rounded-full object-cover border border-white/10"
-                    onError={() => setImageLoadError(true)}
-                    onLoad={() => setImageLoadError(false)}
-                  />
-                </div>
-              ) : (
-                <div className="w-28 h-28 rounded-full bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center text-white font-bold text-4xl shadow-inner border border-white/10">
-                  {firstLetter}
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={handleImageClick}
-                className="absolute bottom-0 right-0 w-9 h-9 backdrop-blur-lg bg-indigo-500 border-2 border-[#0a0a0a] rounded-full flex items-center justify-center hover:scale-110 transition-transform shadow-lg shadow-indigo-500/40 group-hover:bg-indigo-400"
+            ) : (
+              <Avatar initials={initials} size={60} fontSize={20} />
+            )}
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h2
+                style={{
+                  fontFamily: 'var(--font-display)',
+                  fontSize: 30,
+                  fontWeight: 400,
+                  letterSpacing: '-0.015em',
+                  lineHeight: 1.1,
+                  margin: 0,
+                  color: 'var(--color-ink)',
+                }}
               >
-                <div className="w-4 h-4 bg-white/20 rounded-sm opacity-80" />
-              </button>
-            </div>
-            
-            <h2 className="text-2xl font-bold text-white tracking-tight">{fullName}</h2>
-            <p className="text-slate-400 text-sm mb-6 bg-white/[0.03] px-3 py-1 rounded-full mt-2 font-medium">{profileData.email}</p>
-            
-            <div className="w-full border-t border-white/5 pt-5 space-y-4">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02]">
-                <span className="text-slate-500 text-xs font-bold uppercase tracking-wider">Role</span>
-                <span className="text-slate-300 font-medium capitalize text-sm">{profileData.role || 'Student'}</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02]">
-                <span className="text-slate-500 text-xs font-bold uppercase tracking-wider">Login ID</span>
-                <span className="text-slate-300 font-medium text-sm">{sessionStorage.getItem('loginId') || 'N/A'}</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02]">
-                <span className="text-slate-500 text-xs font-bold uppercase tracking-wider">Status</span>
-                <span className="px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full text-[10px] uppercase tracking-widest font-bold border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">Active</span>
+                {fullName}
+              </h2>
+              {/* A long address beside the badge is wider than a phone, so
+                  the pair wraps and the address is free to break. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 14.5, color: 'var(--color-text-3)', wordBreak: 'break-word', minWidth: 0 }}>
+                  {profileData.email}
+                </span>
+                <Badge tone="green">Active</Badge>
               </div>
             </div>
+
+            <Button variant="secondary" onClick={handleImageClick} style={{ flexShrink: 0 }}>
+              {profileData.profilePicture && !imageLoadError ? 'Change photo' : 'Add photo'}
+            </Button>
           </div>
 
-          {/* Quick Links */}
-          <div data-animate className="backdrop-blur-xl bg-[#0a0a0a]/50 rounded-[1.5rem] p-5 border border-white/5 hover:bg-[#0a0a0a]/80 transition-all cursor-pointer group shadow-lg flex items-center justify-between" onClick={() => navigate('/resume')} style={{transitionDelay: '0.2s'}}>
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-center group-hover:scale-105 group-hover:bg-indigo-500/20 transition-all">
-                <FileText size={20} className="text-indigo-400" />
+          {/* Stat strip — inline rather than <StatStrip> because one value is a
+              login ID, which needs mono at a smaller size than 28px. */}
+          <div className="grid-sm-2"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              borderBottom: '1px solid var(--color-line)',
+            }}
+          >
+            {stats.map((stat, i) => (
+              <div
+                key={stat.label}
+                style={{
+                  padding: '18px 30px',
+                  borderRight: i === stats.length - 1 ? 'none' : '1px solid var(--color-line)',
+                }}
+              >
+                <MicroLabel size={10.5} tracking="0.13em" color="var(--color-text-3)" style={{ display: 'block', marginBottom: 10 }}>
+                  {stat.label}
+                </MicroLabel>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: stat.mono ? 17 : 28,
+                    letterSpacing: '-0.02em',
+                    color: 'var(--color-ink)',
+                    textTransform: stat.mono ? 'none' : 'capitalize',
+                  }}
+                >
+                  {stat.value}
+                </span>
               </div>
-              <div>
-                <h3 className="text-base font-bold text-white tracking-wide">Resume</h3>
-                <p className="text-slate-500 text-xs mt-0.5">Manage your documents</p>
-              </div>
-            </div>
-            <ArrowLeft className="text-slate-600 group-hover:text-white transition-colors rotate-180" size={18} />
+            ))}
           </div>
 
-          <div data-animate className="backdrop-blur-xl bg-[#0a0a0a]/50 rounded-[1.5rem] p-5 border border-white/5 hover:bg-[#0a0a0a]/80 transition-all cursor-pointer group shadow-lg flex items-center justify-between" onClick={() => navigate('/settings')} style={{transitionDelay: '0.3s'}}>
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-slate-800/50 border border-white/10 rounded-xl flex items-center justify-center group-hover:scale-105 group-hover:bg-white/5 transition-all">
-                <SettingsIcon size={20} className="text-slate-400 group-hover:text-white transition-colors" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-white tracking-wide">Settings</h3>
-                <p className="text-slate-500 text-xs mt-0.5">App preferences</p>
-              </div>
+          {/* Editable details */}
+          <form onSubmit={handleSaveProfile}>
+            <div style={{ padding: '22px 20px 0' }}>
+              <MicroLabel size={10.5} tracking="0.13em" style={{ display: 'block', marginBottom: 14 }}>
+                Your details
+              </MicroLabel>
             </div>
-            <ArrowLeft className="text-slate-600 group-hover:text-white transition-colors rotate-180" size={18} />
-          </div>
-        </div>
 
-        {/* Right Column (Spans 8 Columns) */}
-        <div className="lg:col-span-8 backdrop-blur-3xl bg-[#090b14]/70 rounded-[2rem] border border-white/5 shadow-2xl p-6 lg:p-10 relative flex flex-col h-full">
-          <div className="flex items-center gap-4 mb-8 shrink-0">
-            <div className="w-12 h-12 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center">
-              <User size={22} className="text-white" />
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-white tracking-tight">Profile Information</h2>
-              <span className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] uppercase tracking-wider font-bold text-indigo-400 mt-2 inline-block">
-                Editable Details
-              </span>
-            </div>
-          </div>
-
-          <form onSubmit={handleSaveProfile} className="space-y-6 flex-1 flex flex-col">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-1 rounded-2xl">
-                <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                  First Name
-                </label>
-                <input
-                  type="text"
+            <div style={{ border: '1px solid var(--color-line)', margin: '0 20px' }}>
+              <Row title="First name" detail="Shown on your resume and portfolio.">
+                <Input
                   name="firstName"
                   value={profileData.firstName}
                   onChange={handleProfileChange}
-                  className="w-full px-5 py-4 bg-[#0a0a0a] border border-white/10 rounded-xl text-white focus:outline-none focus:border-indigo-500/50 hover:bg-white/[0.02] transition-colors"
-                  placeholder="Enter first name"
+                  placeholder="First name"
+                  style={{ padding: '11px 14px' }}
                 />
-              </div>
-              <div className="p-1 rounded-2xl">
-                <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                  Last Name
-                </label>
-                <input
-                  type="text"
+              </Row>
+
+              <Row title="Last name">
+                <Input
                   name="lastName"
                   value={profileData.lastName}
                   onChange={handleProfileChange}
-                  className="w-full px-5 py-4 bg-[#0a0a0a] border border-white/10 rounded-xl text-white focus:outline-none focus:border-indigo-500/50 hover:bg-white/[0.02] transition-colors"
-                  placeholder="Enter last name"
+                  placeholder="Last name"
+                  style={{ padding: '11px 14px' }}
                 />
-              </div>
-            </div>
+              </Row>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-1 rounded-2xl opacity-80">
-                <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  value={profileData.email}
-                  disabled
-                  className="w-full px-5 py-4 bg-[#050505] border border-white/5 rounded-xl text-slate-500 cursor-not-allowed"
-                />
-                <p className="text-[10px] text-slate-500 mt-2 ml-2 italic">Cannot be changed</p>
-              </div>
-              <div className="p-1 rounded-2xl">
-                <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                  Mobile Number
-                </label>
-                <input
-                  type="tel"
+              <Row title="Email" detail="Used to sign in. It cannot be changed here.">
+                <Input value={profileData.email} disabled style={{ padding: '11px 14px', color: 'var(--color-text-4)' }} />
+              </Row>
+
+              <Row title="Mobile number" detail="Digits only, up to ten.">
+                <PhoneInput
                   name="phone"
                   value={profileData.phone}
                   onChange={handleProfileChange}
-                  pattern="[0-9]*"
-                  inputMode="numeric"
-                  maxLength="10"
-                  className="w-full px-5 py-4 bg-[#0a0a0a] border border-white/10 rounded-xl text-white focus:outline-none focus:border-indigo-500/50 hover:bg-white/[0.02] transition-colors"
-                  placeholder="Add phone number"
+                  inputStyle={{ padding: '11px 14px' }}
                 />
-              </div>
-            </div>
+              </Row>
 
-            <div className="p-1 rounded-2xl">
-              <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                Primary Role
-              </label>
-              <div className="relative">
+              <Row title="Target role" detail="The track your roadmap and assessments are built from.">
                 <select
-                  name="role"
-                  value={profileData.role}
+                  name="target_role"
+                  value={profileData.target_role}
                   onChange={handleProfileChange}
-                  className="w-full px-5 py-4 bg-[#0a0a0a] border border-white/10 rounded-xl text-white focus:outline-none focus:border-indigo-500/50 hover:bg-white/[0.02] transition-colors appearance-none cursor-pointer"
-                  style={{ colorScheme: 'dark' }}
+                  style={SELECT_STYLE}
                 >
-                  <option value="student" className="bg-[#0a0a0a] text-white">Student</option>
-                  <option value="developer" className="bg-[#0a0a0a] text-white">Developer</option>
-                  <option value="other" className="bg-[#0a0a0a] text-white">Other</option>
+                  <option value="">Not chosen yet</option>
+                  {/* Keeps the saved value selectable while the list loads,
+                      so the field never looks empty on a slow connection. */}
+                  {(careerRoles.length ? careerRoles : [profileData.target_role].filter(Boolean))
+                    .map((role) => (
+                      <option key={role} value={role}>{role}</option>
+                    ))}
                 </select>
-                <ChevronDown className="absolute right-5 top-1/2 transform -translate-y-1/2 text-slate-500 pointer-events-none" size={18} />
-              </div>
+              </Row>
+
+              <Row title="Experience level" detail="Sets the starting point of your plan.">
+                <select
+                  name="experience_level"
+                  value={profileData.experience_level}
+                  onChange={handleProfileChange}
+                  style={SELECT_STYLE}
+                >
+                  <option value="">Not set</option>
+                  <option value="beginner">Beginner</option>
+                  <option value="intermediate">Intermediate</option>
+                  <option value="advanced">Advanced</option>
+                </select>
+              </Row>
+
+              <Row title="Hours per week" detail="How fast your roadmap is paced.">
+                <Input
+                  type="number"
+                  name="hours_per_week"
+                  min="1"
+                  value={profileData.hours_per_week}
+                  onChange={handleProfileChange}
+                  placeholder="10"
+                  style={{ padding: '11px 14px' }}
+                />
+              </Row>
+
+              <Row title="Learning style" detail="What your weekly plan leans on.">
+                <select
+                  name="learning_style"
+                  value={profileData.learning_style}
+                  onChange={handleProfileChange}
+                  style={SELECT_STYLE}
+                >
+                  <option value="mixed">Mixed</option>
+                  <option value="video">Video</option>
+                  <option value="reading">Reading</option>
+                  <option value="project">Projects</option>
+                </select>
+              </Row>
+
+              {/* One skills field, not two. This used to write only the
+                  display string while the roadmap read a separate array, so
+                  editing it here had no effect on the plan. Both are now
+                  written from this one input. */}
+              <Row title="Skills you have" detail="Comma separated. Used when building your roadmap." last>
+                <Input
+                  name="skills"
+                  value={profileData.skills}
+                  onChange={handleProfileChange}
+                  placeholder="JavaScript, React, Node.js"
+                  style={{ padding: '11px 14px' }}
+                />
+              </Row>
             </div>
 
-            <div className="p-1 rounded-2xl">
-              <label className="block text-xs font-bold text-slate-400 mb-2 tracking-wider uppercase ml-2">
-                Skills
-              </label>
-              <input
-                type="text"
-                name="skills"
-                value={profileData.skills}
-                onChange={handleProfileChange}
-                className="w-full px-5 py-4 bg-[#0a0a0a] border border-white/10 rounded-xl text-white focus:outline-none focus:border-indigo-500/50 hover:bg-white/[0.02] transition-colors"
-                placeholder="e.g., JavaScript, React, Node.js"
-              />
-            </div>
-
-            <div className="pt-8 mt-auto border-t border-white/5 flex justify-end">
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-8 py-4 rounded-xl font-bold text-sm transition-all duration-500 group bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-xl shadow-indigo-500/20 hover:shadow-indigo-500/40 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3"
-              >
-                <span className="tracking-wide">{loading ? 'Saving Changes...' : 'Save Profile Details'}</span>
-                {!loading && (
-                  <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center">
-                    <Save size={12} className="text-white" />
-                  </div>
-                )}
-              </button>
+            <div
+              style={{
+                padding: '22px 20px',
+                marginTop: 22,
+                borderTop: '1px solid var(--color-line)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 16,
+              }}
+            >
+              <Button variant="quiet" onClick={() => navigate('/settings')}>Account and security</Button>
+              <Button type="submit" loading={loading} loadingLabel="Saving…">Save changes</Button>
             </div>
           </form>
-        </div>
+        </Card>
       </div>
 
-      {/* Image Editor Modal */}
-      {showImageEditor && (
-        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
-          <div className="backdrop-blur-xl bg-slate-900/60 rounded-2xl p-6 max-w-md w-full border border-white/10 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold text-white">Adjust Profile Picture</h3>
-              <button
-                onClick={handleCancelImageEdit}
-                className="p-2 backdrop-blur-lg bg-white/5 hover:bg-white/10 rounded-lg transition-all border border-white/10"
-              >
-                <X size={20} className="text-gray-400" />
-              </button>
-            </div>
+      <Modal
+        open={showImageEditor}
+        onClose={handleCancelImageEdit}
+        title="Adjust your photo"
+        actions={
+          <>
+            <Button variant="secondary" onClick={handleCancelImageEdit} disabled={uploadingPicture}>Cancel</Button>
+            <Button onClick={handleSaveEditedImage} loading={uploadingPicture} loadingLabel="Uploading…">Save photo</Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <canvas
+            ref={canvasRef}
+            style={{ width: 300, height: 300, border: '1px solid var(--color-line)', cursor: 'move' }}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+          />
+          <p style={{ fontSize: 13.5, color: 'var(--color-text-4)', margin: '10px 0 0' }}>
+            Drag the image to reposition it.
+          </p>
 
-            {/* Canvas Preview */}
-            <div className="flex justify-center mb-6">
-              <div className="relative">
-                <canvas
-                  ref={canvasRef}
-                  className="rounded-full border-4 border-indigo-600 cursor-move"
-                  style={{ width: '300px', height: '300px' }}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                />
-                <p className="text-center text-gray-400 text-sm mt-3">
-                  Drag to reposition
-                </p>
-              </div>
-            </div>
-
-            {/* Zoom Controls */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                <ZoomIn size={16} className="inline mr-2" />
-                Zoom
-              </label>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setImageScale(prev => Math.max(0.2, prev - 0.1))}
-                  className="p-2 backdrop-blur-lg bg-white/5 hover:bg-white/10 rounded-lg transition-all border border-white/10"
-                >
-                  <ZoomOut size={18} className="text-white" />
-                </button>
-                <input
-                  type="range"
-                  min="0.2"
-                  max="5"
-                  step="0.1"
-                  value={imageScale}
-                  onChange={(e) => setImageScale(parseFloat(e.target.value))}
-                  className="flex-1 h-2 backdrop-blur-lg bg-white/10 rounded-lg appearance-none cursor-pointer border border-white/20"
-                />
-                <button
-                  onClick={() => setImageScale(prev => Math.min(5, prev + 0.1))}
-                  className="p-2 backdrop-blur-lg bg-white/5 hover:bg-white/10 rounded-lg transition-all border border-white/10"
-                >
-                  <ZoomIn size={18} className="text-white" />
-                </button>
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex gap-3">
-              <button
-                onClick={handleCancelImageEdit}
-                disabled={uploadingPicture}
-                className="flex-1 px-4 py-3 backdrop-blur-lg bg-slate-600/30 hover:bg-slate-600/40 text-white font-semibold rounded-xl transition-all border border-slate-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveEditedImage}
-                disabled={uploadingPicture}
-                className="flex-1 px-4 py-3 backdrop-blur-lg bg-indigo-500/30 hover:bg-indigo-500/40 text-white font-semibold rounded-xl transition-all border border-indigo-400/50 hover:border-indigo-400/70 hover:shadow-xl hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {uploadingPicture ? 'Uploading...' : 'Save Photo'}
-              </button>
+          {/* Zoom — the §5 stepper's collapsed-border shape, but stepping by a
+              tenth so the range is reachable in a few clicks. */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: 20 }}>
+            <MicroLabel size={11} tracking="0.12em">Zoom</MicroLabel>
+            <div style={{ display: 'flex', alignItems: 'stretch' }}>
+              <button type="button" style={ZOOM_CELL} onClick={() => setImageScale((s) => Math.max(0.2, +(s - 0.1).toFixed(1)))} aria-label="Zoom out">−</button>
+              <span style={{ ...ZOOM_CELL, cursor: 'default', padding: '8px 16px', borderLeft: 'none', borderRight: 'none', display: 'flex', alignItems: 'center' }}>
+                {`${Math.round(imageScale * 100)}%`}
+              </span>
+              <button type="button" style={ZOOM_CELL} onClick={() => setImageScale((s) => Math.min(5, +(s + 0.1).toFixed(1)))} aria-label="Zoom in">+</button>
             </div>
           </div>
         </div>
-      )}
-    </div>
+      </Modal>
+    </LearnerShell>
   );
 };
 

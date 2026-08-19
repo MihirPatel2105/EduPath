@@ -1,0 +1,513 @@
+import React from 'react';
+import { Link, NavLink, useLocation } from 'react-router-dom';
+import { Logo, Wordmark, MicroLabel, Avatar } from './primitives';
+import { clearSession } from '../utils/session';
+
+/**
+ * Spec §6 — Auth, learner, admin and editorial shells, plus the footer.
+ */
+
+/**
+ * Fades the content column in when the route changes.
+ *
+ * Keyed on the path because a CSS animation only replays when the element is
+ * recreated; without the key the wrapper survives navigation and nothing
+ * happens. It sits inside the shells rather than around the routes so the
+ * sidebar and header never repaint — they do not change between pages, and
+ * animating them would read as a flicker.
+ *
+ * Reduced motion is handled globally in index.css.
+ */
+const PageFade = ({ children }) => {
+  const { pathname } = useLocation();
+  return <div key={pathname} className="page-enter">{children}</div>;
+};
+
+/* ── Auth shell ───────────────────────────────────────────────────────────
+   1fr 1fr at 100vh. Left ink panel: logo top, a Newsreader 44px pull quote
+   with attribution, a mono label pinned at the bottom. Right paper-light with
+   a centred 380px column. */
+export const AuthShell = ({ quote, attribution, footLabel = 'EDUPATH', children }) => (
+  <div className="auth-shell" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: '100vh' }}>
+    {/* The panel is decoration; below 1024px index.css drops it so the form
+        gets the whole viewport rather than half of one. It used to carry
+        `max-lg:hidden`, which never applied — see the note in index.css. */}
+    <div
+      className="auth-shell__panel"
+      style={{
+        background: 'var(--color-ink)',
+        padding: 48,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+      }}
+    >
+      <Link to="/" style={{ textDecoration: 'none', width: 'fit-content' }}>
+        <Wordmark dark size={28} labelSize={24} />
+      </Link>
+
+      <div style={{ maxWidth: 420 }}>
+        <p
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontSize: 44,
+            fontWeight: 400,
+            letterSpacing: '-0.02em',
+            lineHeight: 1.12,
+            color: '#fff',
+            margin: 0,
+          }}
+        >
+          {quote}
+        </p>
+        {attribution && (
+          <p style={{ fontSize: 14, color: 'var(--color-dark-text-3)', marginTop: 20, marginBottom: 0 }}>
+            {attribution}
+          </p>
+        )}
+      </div>
+
+      <MicroLabel size={11} tracking="0.14em" color="var(--color-dark-text-3)">
+        {footLabel}
+      </MicroLabel>
+    </div>
+
+    <div
+      style={{
+        background: 'var(--color-paper-light)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '48px 32px',
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: 380 }}>{children}</div>
+    </div>
+  </div>
+);
+
+/* ── Learner shell ────────────────────────────────────────────────────────
+   230px sidebar on surface, content on paper-warm. The 3px left border on nav
+   items exists in both states — transparent when inactive — so nothing shifts
+   when selection moves.
+
+   The shell itself is pinned to 100vh with `overflow: hidden`; only <main>
+   scrolls. Sidebar and header stay put on long pages instead of scrolling
+   out of view with the content.
+
+   The sidebar's logo box and the header share a fixed HEADER_HEIGHT rather
+   than each sizing to its own content (24px padding around a 26px logo vs.
+   18px padding around an eyebrow + a 30px heading naturally land at
+   different heights) — otherwise their border-bottoms sit at two different
+   rows instead of forming one line across the page. */
+const HEADER_HEIGHT = 93;
+const NavItem = ({ to, children, dark = false, end = false }) => (
+  <NavLink
+    to={to}
+    className="app-nav__item"
+    /* Without `end`, a parent path such as /admin stays lit on every child
+       route, so two items read as selected at once. */
+    end={end}
+    style={({ isActive }) => ({
+      display: 'block',
+      width: '100%',
+      textAlign: 'left',
+      padding: dark ? '11px 24px' : '10px 24px',
+      fontSize: dark ? 14.5 : 15,
+      fontFamily: 'var(--font-sans)',
+      textDecoration: 'none',
+      borderLeft: `3px solid ${isActive ? 'var(--color-clay)' : 'transparent'}`,
+      background: isActive ? (dark ? 'var(--color-ink-soft)' : 'var(--color-surface-active)') : 'transparent',
+      color: isActive ? (dark ? '#fff' : 'var(--color-ink)') : dark ? 'var(--color-dark-text-3)' : 'var(--color-text-2)',
+      fontWeight: isActive ? 600 : 400,
+      transition: 'background-color 120ms ease',
+    })}
+  >
+    {children}
+  </NavLink>
+);
+
+/**
+ * Only the admin shell renders this now — the learner side signs out from
+ * Settings, behind a confirmation.
+ *
+ * It has to stay here. When the role is admin, App mounts a route tree whose
+ * catch-all matches every path, so /settings resolves to the dashboard and the
+ * learner sign-out is unreachable; /admin/settings is platform configuration
+ * and has none. This button is an administrator's only way out.
+ */
+const SignOut = ({ dark = false }) => (
+  <button
+    type="button"
+    onClick={() => {
+      // clearSession rather than sessionStorage.clear(): the keys the session
+      // owns are listed in one place now, and clearing wholesale also threw
+      // away unrelated state that happens to share the store.
+      clearSession();
+      // App.jsx decides between the admin routes and the learner routes with
+      // a plain `if` at the top of its render, read straight from
+      // sessionStorage rather than through React state. A client-side
+      // navigate() does not re-run that check, so from the admin side it
+      // leaves the admin route tree mounted — whose catch-all route matches
+      // any path, including /signin — and the screen never actually changes.
+      // The hard reload forces App to re-evaluate the (now-cleared) role.
+      window.location.href = '/signin';
+    }}
+    style={{
+      background: 'none',
+      border: 'none',
+      padding: 0,
+      cursor: 'pointer',
+      fontSize: 13.5,
+      textDecoration: 'underline',
+      color: dark ? 'var(--color-dark-text-2)' : 'var(--color-text-3)',
+      fontFamily: 'var(--font-sans)',
+    }}
+  >
+    Sign out
+  </button>
+);
+
+export const LearnerShell = ({ sections = [], eyebrow, title, note, initials, footLabel, children }) => (
+  <div className="app-shell" style={{ display: 'grid', gridTemplateColumns: '230px 1fr', height: '100vh' }}>
+    <aside
+      className="app-shell__aside"
+      style={{
+        background: 'var(--color-surface)',
+        borderRight: '1px solid var(--color-line)',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100vh',
+        overflowY: 'auto',
+      }}
+    >
+      <div className="app-shell__brand" style={{ height: HEADER_HEIGHT, flexShrink: 0, display: 'flex', alignItems: 'center', padding: '0 24px', borderBottom: '1px solid var(--color-line)' }}>
+        <Link to="/" style={{ textDecoration: 'none' }}>
+          <Wordmark size={26} labelSize={22} />
+        </Link>
+      </div>
+
+      <nav className="app-shell__nav" style={{ flex: 1 }}>
+        {sections.map((section) => (
+          <div className="app-shell__navgroup" key={section.label}>
+            <MicroLabel
+              size={10.5}
+              tracking="0.14em"
+              color="var(--color-text-4)"
+              style={{ display: 'block', padding: '22px 0 8px 24px' }}
+            >
+              {section.label}
+            </MicroLabel>
+            {section.items.map((item) => (
+              <NavItem key={item.to} to={item.to} end={item.end}>{item.label}</NavItem>
+            ))}
+          </div>
+        ))}
+      </nav>
+
+      {/* The label names who is signed in rather than repeating a nav section
+          heading, which would print "Account" twice in the same column.
+
+          No sign out here: Settings carries it, behind a confirmation, and it
+          is one click away under Account in the nav above. A second copy in
+          the corner of every learner page was a destructive action sitting
+          permanently under the cursor with nothing to confirm it. */}
+      <div className="app-shell__foot" style={{ marginTop: 'auto', borderTop: '1px solid var(--color-line)', padding: 24 }}>
+        <MicroLabel size={10.5} tracking="0.14em" color="var(--color-text-4)" style={{ display: 'block', wordBreak: 'break-all' }}>
+          {footLabel || 'Signed in'}
+        </MicroLabel>
+      </div>
+    </aside>
+
+    <div className="app-shell__body" style={{ background: 'var(--color-paper-warm)', display: 'flex', flexDirection: 'column', minWidth: 0, height: '100vh', overflow: 'hidden' }}>
+      <header
+        className="app-shell__header"
+        style={{
+          height: HEADER_HEIGHT,
+          background: 'var(--color-surface)',
+          borderBottom: '1px solid var(--color-line)',
+          padding: '0 32px 18px',
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'space-between',
+          gap: 20,
+          flexShrink: 0,
+        }}
+      >
+        <div>
+          {eyebrow && (
+            <MicroLabel size={10.5} tracking="0.14em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 7 }}>
+              {eyebrow}
+            </MicroLabel>
+          )}
+          <h1
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: 30,
+              fontWeight: 400,
+              letterSpacing: '-0.015em',
+              lineHeight: 1.1,
+              margin: 0,
+              color: 'var(--color-ink)',
+            }}
+          >
+            {title}
+          </h1>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {note && <span style={{ fontSize: 13.5, color: 'var(--color-text-3)' }}>{note}</span>}
+          {initials && <Avatar initials={initials} size={32} fontSize={12} />}
+        </div>
+      </header>
+
+      {/* main only scrolls; the flex column that lays out the page's cards is
+          a plain block child of it, not a flex item itself — a flex item
+          shrinks to fit its container by default, which was squeezing every
+          card down to nothing instead of letting main grow a scrollbar. */}
+      <main className="app-shell__main" style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+        <PageFade>
+          <div style={{ padding: '26px 32px', display: 'flex', flexDirection: 'column', gap: 22 }}>
+            {children}
+          </div>
+        </PageFade>
+      </main>
+    </div>
+  </div>
+);
+
+/* ── Admin shell ──────────────────────────────────────────────────────────
+   218px ink sidebar. Header carries a mono chip and a quiet action rather
+   than the learner header's note and avatar. */
+export const AdminShell = ({ items = [], title, chip, action, children }) => (
+  <div className="app-shell" style={{ display: 'grid', gridTemplateColumns: '218px 1fr', height: '100vh' }}>
+    <aside className="app-shell__aside" style={{ background: 'var(--color-ink)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
+      <div className="app-shell__brand" style={{ padding: '26px 24px' }}>
+        <Wordmark dark size={26} labelSize={22} />
+      </div>
+
+      <nav className="app-shell__nav" style={{ flex: 1 }}>
+        {items.map((item) => (
+          <NavItem key={item.to} to={item.to} end={item.end} dark>{item.label}</NavItem>
+        ))}
+      </nav>
+
+      <div className="app-shell__foot" style={{ padding: '24px' }}>
+        <SignOut dark />
+      </div>
+    </aside>
+
+    <div className="app-shell__body" style={{ background: 'var(--color-paper-warm)', display: 'flex', flexDirection: 'column', minWidth: 0, height: '100vh', overflow: 'hidden' }}>
+      <header
+        className="app-shell__header"
+        style={{
+          background: 'var(--color-surface)',
+          borderBottom: '1px solid var(--color-line)',
+          padding: '20px 32px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 20,
+          flexShrink: 0,
+        }}
+      >
+        <h1
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontSize: 30,
+            fontWeight: 400,
+            letterSpacing: '-0.015em',
+            lineHeight: 1.1,
+            margin: 0,
+            color: 'var(--color-ink)',
+          }}
+        >
+          {title}
+        </h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {chip && (
+            <span
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11.5,
+                border: '1px solid var(--color-line-btn)',
+                padding: '7px 11px',
+                color: 'var(--color-text-3)',
+              }}
+            >
+              {chip}
+            </span>
+          )}
+          {action}
+        </div>
+      </header>
+
+      {/* main only scrolls; the flex column that lays out the page's cards is
+          a plain block child of it, not a flex item itself — a flex item
+          shrinks to fit its container by default, which was squeezing every
+          card down to nothing instead of letting main grow a scrollbar. */}
+      <main className="app-shell__main" style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+        <PageFade>
+          <div style={{ padding: '26px 32px', display: 'flex', flexDirection: 'column', gap: 22 }}>
+            {children}
+          </div>
+        </PageFade>
+      </main>
+    </div>
+  </div>
+);
+
+/* ── Editorial shell ──────────────────────────────────────────────────────
+   Marketing and public pages: paper, centred 1100px, 80px 32px sections
+   divided by rules rather than by background change. */
+export const EditorialShell = ({ children, maxWidth = 1100, style }) => (
+  <div style={{ background: 'var(--color-paper)', minHeight: '100vh', ...style }}>
+    <div style={{ maxWidth, margin: '0 auto', padding: '0 32px' }}>{children}</div>
+  </div>
+);
+
+export const EditorialSection = ({ eyebrow, heading, children, first = false, style }) => (
+  <section
+    style={{
+      padding: '80px 0',
+      borderTop: first ? 'none' : '1px solid var(--color-line)',
+      ...style,
+    }}
+  >
+    {eyebrow && (
+      <MicroLabel size={11} tracking="0.14em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 16 }}>
+        {eyebrow}
+      </MicroLabel>
+    )}
+    {heading && (
+      <h2
+        style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: 44,
+          fontWeight: 400,
+          letterSpacing: '-0.02em',
+          lineHeight: 1.1,
+          margin: 0,
+          marginBottom: children ? 32 : 0,
+          color: 'var(--color-ink)',
+        }}
+      >
+        {heading}
+      </h2>
+    )}
+    {children}
+  </section>
+);
+
+/* ── Footer ───────────────────────────────────────────────────────────────
+   Ink panel, 48px 32px, inner 1100px. Logo left, link columns right, a mono
+   copyright line under a #2A2822 rule. */
+/**
+ * Ink panel, 1100px inner, brand block left and link columns right over a
+ * #2A2822 rule.
+ *
+ * The brand side used to hold nothing but the wordmark against
+ * `space-between`, which pushed the columns hard right and left roughly half
+ * the footer empty. It now carries a line about what the product does and how
+ * to reach a person, so the space is doing something.
+ *
+ * Links take either `to` (in-app) or `href` (mail and anything off-site), so a
+ * contact address can sit in a column without a second component.
+ */
+const FooterLink = ({ link }) => {
+  const style = { fontSize: 14, color: 'var(--color-dark-text-2)', textDecoration: 'none' };
+  const hover = {
+    onMouseEnter: (e) => { e.currentTarget.style.color = '#fff'; },
+    onMouseLeave: (e) => { e.currentTarget.style.color = 'var(--color-dark-text-2)'; },
+  };
+
+  return link.href
+    ? <a href={link.href} style={style} {...hover}>{link.label}</a>
+    : <Link to={link.to} style={style} {...hover}>{link.label}</Link>;
+};
+
+export const SiteFooter = ({ columns = [], blurb, contact = [], note }) => (
+  <footer style={{ background: 'var(--color-ink)', padding: '48px 32px' }}>
+    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <div style={{ display: 'flex', gap: 56, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {/* Brand. Grows to fill, but stops before the measure gets unreadable. */}
+        <div style={{ flex: '1 1 260px', maxWidth: 340 }}>
+          <Wordmark dark size={28} labelSize={24} />
+
+          {blurb && (
+            <p style={{ margin: '18px 0 0', fontSize: 14, lineHeight: 1.6, color: 'var(--color-dark-text-2)' }}>
+              {blurb}
+            </p>
+          )}
+
+          {contact.length > 0 && (
+            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {contact.map((row) => (
+                <span key={row.label} style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--color-dark-text-3)' }}>
+                  {row.href
+                    ? (
+                      <a
+                        href={row.href}
+                        style={{ color: 'var(--color-dark-text-3)', textDecoration: 'none' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = '#fff'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--color-dark-text-3)'; }}
+                      >
+                        {row.label}
+                      </a>
+                    )
+                    : row.label}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Columns share the remaining width and wrap rather than squeezing. */}
+        <div
+          style={{
+            flex: '2 1 520px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))',
+            gap: '32px 36px',
+          }}
+        >
+          {columns.map((col) => (
+            <div key={col.heading}>
+              <MicroLabel size={10.5} tracking="0.14em" color="var(--color-dark-text-3)" style={{ display: 'block', marginBottom: 14 }}>
+                {col.heading}
+              </MicroLabel>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {col.links.map((link) => (
+                  <li key={link.label}><FooterLink link={link} /></li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div
+        style={{
+          borderTop: '1px solid #2A2822',
+          marginTop: 40,
+          paddingTop: 20,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          gap: 24,
+          flexWrap: 'wrap',
+        }}
+      >
+        <MicroLabel size={11} tracking="0.12em" color="var(--color-dark-text-3)">
+          © {new Date().getFullYear()} EduPath
+        </MicroLabel>
+        {note && (
+          <MicroLabel size={11} tracking="0.12em" color="var(--color-dark-text-3)">
+            {note}
+          </MicroLabel>
+        )}
+      </div>
+    </div>
+  </footer>
+);
+
+export default { AuthShell, LearnerShell, AdminShell, EditorialShell, EditorialSection, SiteFooter };

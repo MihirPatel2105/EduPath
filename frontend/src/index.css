@@ -1,404 +1,680 @@
 @import "tailwindcss";
 
-/* Smooth Scroll Behavior */
-html {
-  scroll-behavior: smooth;
+/* ==========================================================================
+   Design tokens — design_handoff_edupath_redesign/DESIGN_SPEC.md §2, §3
+
+   Values are copied literally from the spec, which states they are final.
+   The previous stylesheet held ~400 lines of moving shapes, gradients, glass
+   toasts and arrival animations; §1 forbids all of them, so none carries over.
+   Removing the `[data-animate]` rules also means elements still carrying that
+   attribute render visible instead of waiting on an observer.
+   ========================================================================== */
+
+@theme {
+  /* Ink and paper */
+  --color-ink: #12100e;
+  --color-ink-soft: #1c1a17;
+  --color-paper: #efeeea;
+  --color-paper-warm: #f1f0ec;
+  --color-paper-light: #f8f7f3;
+
+  /* Surfaces */
+  --color-surface: #ffffff;
+  --color-surface-active: #f6f5f1;
+  --color-surface-current: #faf9f5;
+  --color-surface-attn: #faf7f0;
+  --color-surface-field: #fbfaf7;
+
+  /* Meaning — colour appears only for status, delta and severity */
+  --color-navy: #1b3a5c;
+  --color-navy-2: #2f5a80;
+  --color-clay: #b4491f;
+  --color-clay-dark: #8e3715;
+  --color-green: #2f6b45;
+  --color-amber: #b07d11;
+
+  /* Text ramp */
+  --color-text-2: #4a4740;
+  --color-text-3: #6e6b64;
+  --color-text-4: #8a867e;
+
+  /* Rules and borders */
+  --color-line: #e3e1d9;
+  --color-line-soft: #efeee8;
+  --color-line-input: #d8d5cc;
+  --color-line-btn: #c9c6bc;
+  --color-line-opt: #dad7ce;
+  --color-bar-empty: #e9e7df;
+
+  /* On ink */
+  --color-dark-text: #e9e7df;
+  --color-dark-text-2: #a8a49b;
+  --color-dark-text-3: #6e6a62;
+
+  /* Type. Every number, date, score and badge is mono; prose never is. */
+  --font-display: Newsreader, serif;
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  /* Radius 0 everywhere. Overriding the scale means a stray `rounded-xl` left
+     over from the old theme renders square rather than off-spec. */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
 }
 
-/* ── Page transition on route change ── */
-@keyframes pageFadeIn {
-  from {
-    opacity: 0;
-  }
+/* ==========================================================================
+   Base
+   ========================================================================== */
 
-  to {
-    opacity: 1;
-  }
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-paper);
 }
 
-.page-transition {
-  animation: pageFadeIn 0.35s ease forwards;
-}
-
-/* ── Scroll-triggered entrance animations ── */
-[data-animate] {
-  opacity: 0;
-  transform: translateY(40px);
-  transition: opacity 0.7s ease, transform 0.7s ease;
-}
-
-[data-animate].animate-in {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* Respect user's reduced motion preference */
-@media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-
-  [data-animate] {
-    opacity: 1;
-    transform: none;
-    transition: none;
-  }
-
-  .page-transition {
-    animation: none;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background-color: #000;
-  color: #e2e8f0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
 }
 
-/* Profile Modal Animations */
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+a {
+  color: var(--color-clay);
+  text-decoration: none;
 }
 
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+a:hover {
+  color: var(--color-clay-dark);
+  text-decoration: underline;
 }
 
-.animate-slideUp {
-  animation: slideUp 0.3s ease-out;
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
 }
 
-.animate-slideDown {
-  animation: slideDown 0.3s ease-out;
+::selection {
+  background: var(--color-navy);
+  color: #fff;
 }
 
-/* Custom Range Slider Styles */
-input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: #4f46e5;
-  cursor: pointer;
-  border: 2px solid #fff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+/* Spec §5 Button: focus ring 2px solid navy, offset 2px. */
+:focus-visible {
+  outline: 2px solid var(--color-navy);
+  outline-offset: 2px;
 }
 
-input[type="range"]::-webkit-slider-thumb:hover {
-  background: #6366f1;
-  transform: scale(1.1);
+/* ==========================================================================
+   Toasts
+
+   react-toastify is used across the app. The spec has no toast; its nearest
+   equivalent is the inline message bar (§5), so toasts borrow that treatment:
+   square, flat, white, hairline border, no shadow.
+   ========================================================================== */
+
+.Toastify__toast {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: var(--color-surface) !important;
+  border: 1px solid var(--color-line) !important;
+  color: var(--color-ink) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 14px !important;
+  padding: 11px 14px !important;
+  min-height: 0 !important;
 }
 
-input[type="range"]::-moz-range-thumb {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: #4f46e5;
-  cursor: pointer;
-  border: 2px solid #fff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+.Toastify__toast--success {
+  border-color: var(--color-green) !important;
+  color: var(--color-green) !important;
 }
 
-input[type="range"]::-moz-range-thumb:hover {
-  background: #6366f1;
-  transform: scale(1.1);
+.Toastify__toast--error {
+  border-color: var(--color-clay) !important;
+  color: var(--color-clay) !important;
 }
 
-/* Live Moving Background Animations */
-@keyframes moveAcross {
-  0% {
-    transform: translateX(-100px) translateY(0) rotate(0deg);
-    opacity: 0;
-  }
-
-  10% {
-    opacity: 0.6;
-  }
-
-  90% {
-    opacity: 0.6;
-  }
-
-  100% {
-    transform: translateX(calc(100vw + 100px)) translateY(-50px) rotate(360deg);
-    opacity: 0;
-  }
+.Toastify__toast--info,
+.Toastify__toast--warning {
+  border-color: var(--color-line-btn) !important;
+  color: var(--color-text-2) !important;
 }
 
-@keyframes moveAcrossReverse {
-  0% {
-    transform: translateX(calc(100vw + 100px)) translateY(0) rotate(0deg);
-    opacity: 0;
-  }
-
-  10% {
-    opacity: 0.6;
-  }
-
-  90% {
-    opacity: 0.6;
-  }
-
-  100% {
-    transform: translateX(-100px) translateY(50px) rotate(-360deg);
-    opacity: 0;
-  }
+.Toastify__progress-bar {
+  display: none !important;
 }
 
-@keyframes moveDiagonal {
-  0% {
-    transform: translate(-100px, 100vh) scale(0.5);
-    opacity: 0;
-  }
+.Toastify__close-button {
+  color: var(--color-text-4) !important;
+  opacity: 1 !important;
+}
 
-  10% {
-    opacity: 0.5;
-  }
+/* ==========================================================================
+   Motion
 
-  90% {
-    opacity: 0.5;
-  }
+   Spec §5: effectively none. State changes only, ≤120ms, on background or
+   border colour. Nothing animates on arrival.
+   ========================================================================== */
 
-  100% {
-    transform: translate(calc(100vw + 100px), -100px) scale(1.2);
-    opacity: 0;
+/* The one exception to "nothing animates on arrival": the shell content column
+   fades in when the route changes, at the same 120ms budget §5 allows for
+   state changes. Opacity only — nothing moves, and the sidebar and header do
+   not repaint, so the page still arrives rather than sliding into place.
+   Test-taking screens render outside the shells and are deliberately excluded:
+   nothing should move while a timer is running. */
+@keyframes page-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.page-enter {
+  animation: page-fade-in 120ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
-@keyframes floatUpDown {
+/* ── Site header ──────────────────────────────────────────────────────────
+   The header carried `max-lg:hidden` on its link row, which never did
+   anything for two reasons: Tailwind never emitted the selector, and the same
+   element sets `display: flex` inline, which a utility class cannot override
+   anyway. So the links never hid, the header stopped shrinking at 812px, and
+   every viewport below that got a horizontal scrollbar.
 
-  0%,
-  100% {
-    transform: translateY(0) translateX(0);
+   Hiding them was the wrong goal regardless — there is no drawer to put them
+   in, and §5 rules out an icon button to open one. They wrap onto their own
+   row instead, so every destination stays reachable at every width.
+
+   This lives in CSS rather than inline because a media query cannot be
+   expressed in a style object. */
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 18px 44px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.site-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+}
+
+@media (max-width: 1023px) {
+  .site-header {
+    flex-wrap: wrap;
+    gap: 14px 24px;
+    padding: 14px 24px;
   }
 
-  25% {
-    transform: translateY(-30px) translateX(20px);
-  }
-
-  50% {
-    transform: translateY(-60px) translateX(-20px);
-  }
-
-  75% {
-    transform: translateY(-30px) translateX(20px);
+  /* Full row under the wordmark and the account controls, which stay paired
+     on the line above. */
+  .site-header__nav {
+    order: 3;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    gap: 10px 20px;
   }
 }
 
-@keyframes rotateAndScale {
-
-  0%,
-  100% {
-    transform: rotate(0deg) scale(1);
-  }
-
-  50% {
-    transform: rotate(180deg) scale(1.3);
+@media (max-width: 560px) {
+  .site-header {
+    padding: 12px 16px;
   }
 }
 
-.animated-bg {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 0;
-  background: #000;
+/* ── Auth split screen ────────────────────────────────────────────────────
+   Same dead class, same result: the ink panel never collapsed, so the
+   sign-in and sign-up screens kept a 50/50 grid on a phone and squeezed the
+   form into half a viewport. */
+@media (max-width: 1023px) {
+  .auth-shell {
+    grid-template-columns: 1fr !important;
+  }
+
+  .auth-shell__panel {
+    display: none !important;
+  }
 }
 
-.neural-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+/* ── Marketing index rows ─────────────────────────────────────────────────
+   The 90px ordinal column plus a 30px display heading does not fit a phone.
+   The heading is the binding constraint: a grid item's default min-width is
+   auto, so it could not shrink below its own longest word and pushed the row
+   past the viewport — "Cybersecurity Engineer" overflowed at 360px on the
+   roadmap, tracks and how-it-works pages alike.
+
+   The inline `min-width: 0` on the body handles the shrinking; this drops the
+   ordinal column and eases the heading down at the widths where 30px stops
+   fitting. Media queries cannot be written in a style object, which is why
+   this is here rather than in the component. */
+@media (max-width: 640px) {
+  .index-row {
+    grid-template-columns: 1fr !important;
+    gap: 6px !important;
+  }
+
+  .index-row__name {
+    font-size: 24px !important;
+  }
 }
 
-.moving-shape {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(40px);
+@media (max-width: 400px) {
+  .index-row__name {
+    font-size: 21px !important;
+    /* Last resort for a single word longer than the column. */
+    overflow-wrap: break-word;
+  }
+}
+
+/* ── Landing page ─────────────────────────────────────────────────────────
+   Every section was a fixed multi-column grid: a 620px hero console, four
+   step cells, three outcome cards, a 340px figure rail. None of them could
+   shrink, so the front door of the site was 977px wide inside a 420px phone —
+   more than twice the viewport, scrolling sideways before a visitor read a
+   word.
+
+   The columns stack instead of squeezing, in the order the page reads: copy
+   before the console it illustrates, heading before the note beside it.
+   Padding drops from 44px because on a narrow screen that is a fifth of the
+   width. */
+
+/* The console is a still illustration of the roadmap screen, so it follows
+   the sentence that introduces it rather than leading. */
+@media (max-width: 1000px) {
+  .home-hero {
+    grid-template-columns: 1fr !important;
+  }
+
+  .home-hero__copy {
+    padding: 56px 32px 40px !important;
+  }
+
+  .home-band {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .home-steps {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+@media (max-width: 820px) {
+  .home-outcomes {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* The note sat right-aligned opposite the heading; stacked, that reads as
+     a stray line of text, so it returns to the left. */
+  .home-sectionhead {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 14px !important;
+  }
+
+  .home-sectionhead > span {
+    text-align: left !important;
+    max-width: none !important;
+  }
+
+  .home-closing {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 28px !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-steps {
+    grid-template-columns: 1fr !important;
+  }
+
+  .home-hero__copy,
+  .home-sectionhead,
+  .home-closing,
+  .home-band {
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+  }
+}
+
+/* The six-track index rows carried about 730px of fixed widths — a 300px
+   stack column, two 70px figures, 32px gaps and 44px padding — on one line
+   that could not wrap. They reflow into three: name, then the stack, then the
+   figures. */
+@media (max-width: 860px) {
+  .home-track {
+    flex-wrap: wrap;
+    gap: 6px 20px !important;
+    padding: 20px 32px !important;
+  }
+
+  .home-track__name {
+    font-size: 26px !important;
+  }
+
+  .home-track__stack {
+    width: 100% !important;
+    order: 3;
+  }
+
+  .home-track__meta {
+    width: auto !important;
+    text-align: left !important;
+    order: 4;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-track {
+    padding: 18px 20px !important;
+  }
+
+  .home-track__name {
+    font-size: 22px !important;
+  }
+}
+
+/* The console is a still of the roadmap screen. Its 36px frame and four-cell
+   stat row need more than a 360px phone has, so the frame narrows and the
+   cells halve. The hero's buttons and figures wrap for the same reason. */
+@media (max-width: 560px) {
+  .home-console {
+    padding: 24px 20px !important;
+    border-left: none !important;
+  }
+
+  .home-console__cells {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  .home-hero__actions {
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+
+  .home-hero__stats {
+    flex-wrap: wrap;
+    gap: 20px 32px !important;
+  }
+}
+
+/* ── Learner and admin shells on a phone ──────────────────────────────────
+   Both are `230px 1fr` (218px for admin) pinned to 100vh. On a 390px screen
+   that left 160px of usable app — and it never registered as overflow,
+   because the 1fr column simply shrank. The sidebar was taking nearly two
+   thirds of the viewport to show six links.
+
+   Below 900px the sidebar becomes a strip above the content: brand row, then
+   the nav items in a single horizontal line that scrolls sideways. Section
+   labels ("Learn", "Build", "Account") go — they organise a tall column, and
+   in a row they read as items you cannot click.
+
+   The 100vh + inner overflow-y is also dropped. A pinned shell with its own
+   scrolling pane fights the browser on touch: the address bar resize changes
+   100vh mid-scroll, and momentum scrolling stops at the pane edge. The
+   document scrolls instead, which is what a phone expects. */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+    min-height: 100vh;
+  }
+
+  /* min-width: 0 on both children, or the grid column sizes itself to the
+     nav row's content and the whole shell grows to ~750px instead of letting
+     the strip scroll. A grid item's default min-width is auto. */
+  .app-shell__aside {
+    height: auto !important;
+    overflow: visible !important;
+    min-width: 0;
+    border-right: none !important;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .app-shell__brand {
+    height: auto !important;
+    padding: 14px 20px !important;
+  }
+
+  .app-shell__nav {
+    display: flex;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    /* Momentum scrolling without a visible bar over the nav. */
+    scrollbar-width: none;
+  }
+
+  .app-shell__nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The groups stop being boxes so their items join one row. */
+  .app-shell__navgroup {
+    display: contents;
+  }
+
+  .app-shell__navgroup > span {
+    display: none !important;
+  }
+
+  /* Selection moves from the left edge to underneath, which is where it
+     reads in a horizontal strip. */
+  .app-nav__item {
+    width: auto !important;
+    white-space: nowrap;
+    border-left: none !important;
+    border-bottom: 3px solid transparent;
+    padding: 12px 16px !important;
+  }
+
+  .app-nav__item[aria-current='page'] {
+    border-bottom-color: var(--color-clay);
+  }
+
+  /* Not hidden: on the admin side this row is the only sign out in the whole
+     interface, since /settings resolves to the dashboard when the role is
+     admin. It just gets out of the way. */
+  .app-shell__foot {
+    margin-top: 0 !important;
+    padding: 10px 20px !important;
+    border-top: 1px solid var(--color-line);
+  }
+
+  .app-shell__body {
+    height: auto !important;
+    overflow: visible !important;
+    min-width: 0;
+  }
+
+  .app-shell__main {
+    overflow: visible !important;
+  }
+
+  .app-shell__header {
+    height: auto !important;
+    padding: 16px 20px !important;
+    align-items: flex-start !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .app-shell__main > div > div {
+    padding: 18px 16px !important;
+  }
+}
+
+/* ── Layout utilities for narrow screens ──────────────────────────────────
+   Applied to the page-level grids only — the two- and three-column layouts
+   that carry a sidebar or a card row. The small ones (`10px 1fr` for a bullet
+   beside text, `20px 1fr` for an ordinal) are left alone: those are
+   typography, and stacking them would break the line they draw.
+
+   `.stack-sm`   two columns that become one.
+   `.grid-sm-2`  three or four cells that become two, then one on the
+                 narrowest screens, so a stat strip stays a strip. */
+@media (max-width: 760px) {
+  .stack-sm {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* A grid item defaults to min-width: auto, so a single column still cannot
+     shrink below its widest child — a card with a long field inside kept a
+     376px floor in a 360px viewport. */
+  .stack-sm > * {
+    min-width: 0;
+  }
+
+  .grid-sm-2 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Cells drawn by a right border become a stack, so the border that used to
+     separate columns now has to separate rows instead. */
+  .grid-sm-2 > * {
+    border-right: none !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .grid-sm-2 {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ── Preview notes ────────────────────────────────────────────────────────
+   The resume and portfolio builders both show a document beside the form.
+   Everything on those pages works on a phone — the form, the fields, the
+   download — but a page layout is a page layout, and judging one at 390px is
+   not the same as seeing it at the width it will be read at. The note says so
+   where that is true and nowhere else. It is not a barrier: the preview still
+   renders and still scrolls. */
+.wide-screen-note {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .wide-screen-note {
+    display: block;
+    margin: 0;
+    padding: 11px 20px;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--color-text-3);
+    background: var(--color-surface-attn, var(--color-surface));
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  /* Sticky is for a column beside the form. Stacked underneath it, it pins
+     the preview over the fields being typed into. */
+  .preview-col {
+    position: static !important;
+  }
+}
+
+/* ── Staggered reveal ──────────────────────────────────────────────────────
+   Rows fade and rise as they arrive. The hidden state is scoped to
+   `.is-staggered`, a class only useStaggeredReveal adds, so nothing here can
+   hide content on its own: no JavaScript, no observer, or a reduced-motion
+   preference all leave the list plainly visible.
+
+   The distance is small on purpose. This is a list of six roles on a
+   marketing page, not a hero — enough movement to read as arriving in order,
+   not enough to make the page feel like it is assembling itself. */
+.is-staggered .reveal-row {
   opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* Set per row by the hook; the fallback keeps this valid on its own. */
+  transition-delay: var(--reveal-delay, 0ms);
+  /* The rows carry hairline borders, and animating them unhinted leaves the
+     text soft for the duration of the transition on some machines. */
+  will-change: opacity, transform;
 }
 
-.shape-1 {
-  width: 150px;
-  height: 150px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.8), transparent);
-  top: 20%;
-  animation: moveAcross 15s linear infinite;
+.is-staggered .reveal-row.is-revealed {
+  opacity: 1;
+  transform: none;
+  will-change: auto;
 }
 
-.shape-2 {
-  width: 200px;
-  height: 200px;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.8), transparent);
-  top: 60%;
-  animation: moveAcrossReverse 20s linear infinite 3s;
+/* ── Technologies marquee ──────────────────────────────────────────────────
+   A band of the technologies the six tracks name, scrolling on forever.
+
+   The track holds the list twice and travels exactly half its own width, so
+   the moment it finishes it is showing the second copy at precisely the
+   position the first started — the seam never lands anywhere visible. The
+   second copy is aria-hidden, so it is decoration for the eye only and a
+   screen reader reads each name once.
+
+   Anything that moves by itself has to be stoppable: it pauses on hover and
+   on keyboard focus, which is what WCAG 2.2.2 is asking for. */
+.marquee {
+  overflow: hidden;
+  /* Without this the doubled row widens the page and the whole site gains a
+     horizontal scrollbar. */
+  max-width: 100%;
 }
 
-.shape-3 {
-  width: 100px;
-  height: 100px;
-  background: radial-gradient(circle, rgba(16, 185, 129, 0.8), transparent);
-  top: 40%;
-  animation: moveAcross 18s linear infinite 7s;
+.marquee__track {
+  display: flex;
+  width: max-content;
+  animation: marquee-scroll 46s linear infinite;
 }
 
-.shape-4 {
-  width: 180px;
-  height: 180px;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.8), transparent);
-  top: 80%;
-  animation: moveAcrossReverse 22s linear infinite 5s;
+.marquee:hover .marquee__track,
+.marquee:focus-within .marquee__track {
+  animation-play-state: paused;
 }
 
-.shape-5 {
-  width: 120px;
-  height: 120px;
-  background: radial-gradient(circle, rgba(236, 72, 153, 0.7), transparent);
-  animation: moveDiagonal 25s linear infinite;
+@keyframes marquee-scroll {
+  to { transform: translateX(-50%); }
 }
 
-.shape-6 {
-  width: 160px;
-  height: 160px;
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.7), transparent);
-  animation: moveDiagonal 28s linear infinite 10s;
-}
-
-.shape-7 {
-  width: 140px;
-  height: 140px;
-  background: radial-gradient(circle, rgba(96, 165, 250, 0.7), transparent);
-  top: 5%;
-  animation: moveAcross 16s linear infinite 2s;
-}
-
-.shape-8 {
-  width: 110px;
-  height: 110px;
-  background: radial-gradient(circle, rgba(167, 139, 250, 0.6), transparent);
-  top: 10%;
-  animation: moveAcrossReverse 19s linear infinite 8s;
-}
-
-.floating-particle {
-  position: absolute;
-  width: 4px;
-  height: 4px;
-  background: rgba(147, 197, 253, 0.8);
-  border-radius: 50%;
-  box-shadow: 0 0 10px rgba(147, 197, 253, 0.5);
-  animation: floatUpDown 6s ease-in-out infinite;
-}
-
-.rotating-gradient {
-  position: absolute;
-  width: 300px;
-  height: 300px;
-  background: conic-gradient(from 0deg, transparent, rgba(99, 102, 241, 0.4), transparent);
-  border-radius: 50%;
-  filter: blur(30px);
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  animation: rotateAndScale 20s linear infinite;
-}
-
-/* Toast Glassmorphism Effect */
-.toast-glass {
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
-  background-color: rgba(17, 25, 40, 0.75) !important;
-  border: 1px solid rgba(255, 255, 255, 0.125) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
-}
-
-.Toastify__toast--success.toast-glass {
-  background-color: rgba(34, 197, 94, 0.2) !important;
-  border: 1px solid rgba(34, 197, 94, 0.3) !important;
-}
-
-.Toastify__toast--error.toast-glass {
-  background-color: rgba(239, 68, 68, 0.2) !important;
-  border: 1px solid rgba(239, 68, 68, 0.3) !important;
-}
-
-.Toastify__toast--info.toast-glass {
-  background-color: rgba(59, 130, 246, 0.2) !important;
-  border: 1px solid rgba(59, 130, 246, 0.3) !important;
-}
-
-.Toastify__toast--warning.toast-glass {
-  background-color: rgba(251, 146, 60, 0.2) !important;
-  border: 1px solid rgba(251, 146, 60, 0.3) !important;
-}
-
-/* Custom Scrollbar Styles */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 8px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.5);
-  border-radius: 10px;
-  transition: background 0.3s ease;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.7);
-}
-
-/* Firefox scrollbar */
-.custom-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(139, 92, 246, 0.5) rgba(255, 255, 255, 0.05);
-}
-
-/* Fade In Animation */
-@keyframes fadeSlideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-18px);
+/* Reduced motion needs its own answer rather than the global duration
+   override. That rule collapses the animation to almost nothing, which for a
+   loop this long means the band simply sits still mid-travel with the row
+   still laid out as one endless line. Here it becomes what it should have
+   been all along: a static, wrapping list. */
+@media (prefers-reduced-motion: reduce) {
+  .marquee__track {
+    animation: none;
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: center;
   }
 
-  to {
-    opacity: 1;
-    transform: translateY(0);
+  .marquee__copy[aria-hidden='true'] {
+    display: none;
   }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-.animate-fadeIn {
-  animation: fadeIn 0.2s ease-out;
 }

@@ -1,422 +1,394 @@
-import React, { useMemo } from 'react';
-import { CheckCircle2, Circle, Loader2, Link as LinkIcon, Map, Clock, Calendar, Zap, BookOpen, ChevronRight } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Card, CardHeader, CardFooterNote, Button, MicroLabel, Badge, StatusBox, LabelledBar, Loading, Empty,
+} from '../../../design';
+import WeeklyPlan from './WeeklyPlan';
+import InterviewReadiness from './InterviewReadiness';
 
-const DIFFICULTY = {
-  beginner:     { cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',  dot: '#34d399' },
-  intermediate: { cls: 'bg-amber-500/15  text-amber-300  border-amber-500/30',      dot: '#fbbf24' },
-  advanced:     { cls: 'bg-rose-500/15   text-rose-300   border-rose-500/30',        dot: '#fb7185' },
+/**
+ * Spec §7 Roadmap.
+ *
+ * Left: one row per node — status box, title, mono status tag, mono week label.
+ * Done drops the title to text-2 and the tag to text-4; the current node takes
+ * surface-current with a 600 title and an amber tag. A 3px left border keyed to
+ * the same status colour runs down the column, echoing the sidebar's active-item
+ * border so the list reads as a path rather than a plain table.
+ * Right: the current focus card, then a gap report of bars by category.
+ *
+ * Rows with a mini project or resources expand in place on click — the two
+ * concerns (mark complete vs. see resources) used to share one click target,
+ * which meant there was nowhere to show what a skill actually links to. The
+ * status box now owns "mark complete" on its own; the row owns "show detail."
+ *
+ * The old skeleton shimmer is gone — §5 asks for card chrome plus a mono
+ * LOADING label instead.
+ */
+const domainOf = (url) => {
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return ''; }
 };
 
-/* ─── Loading skeleton ──────────────────────────────────────────── */
-const LoadingSkeleton = () => (
-  <div className="space-y-4">
-    {[1,2,3].map(i => (
-      <div key={i} className="backdrop-blur-xl bg-[#090b14]/70 rounded-[1.5rem] border border-white/5 p-6 animate-pulse">
-        <div className="flex gap-4">
-          <div className="w-10 h-10 rounded-full bg-white/5 shrink-0" />
-          <div className="flex-1 space-y-3">
-            <div className="h-3 w-16 bg-white/5 rounded-full" />
-            <div className="h-5 w-48 bg-white/8 rounded-lg" />
-            <div className="h-3 w-32 bg-white/5 rounded-full" />
-          </div>
-        </div>
-      </div>
+const RESOURCE_TONE = { docs: 'muted', article: 'amber', video: 'clay', course: 'green' };
+
+const ResourceList = ({ resources }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+    {resources.map((r, i) => (
+      <a
+        key={`${r.url}-${i}`}
+        href={r.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 10,
+          textDecoration: 'none',
+        }}
+      >
+        <Badge tone={RESOURCE_TONE[r.type] || 'muted'}>{r.type || 'link'}</Badge>
+        <span style={{ fontSize: 14, color: 'var(--color-ink)', textDecoration: 'underline' }}>
+          {r.title || r.url}
+        </span>
+        {domainOf(r.url) && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--color-text-4)' }}>
+            {domainOf(r.url)}
+          </span>
+        )}
+      </a>
     ))}
   </div>
 );
 
-/* ─── Main component ────────────────────────────────────────────── */
-const RoadmapTimeline = ({ roadmapData, isRoadmapLoading, updatingSkill, onMarkCompleted }) => {
+const STATUS_BORDER = {
+  done: 'var(--color-green)',
+  current: 'var(--color-amber)',
+  future: 'transparent',
+};
+
+const RoadmapTimeline = ({
+  onAdapt, adapting, roadmapData, isRoadmapLoading, updatingSkill, onMarkCompleted, onRegenerate, latestInterview, loadingInterview, targetRole, onTestSkill }) => {
   const skills = roadmapData?.skills || [];
-  const hasRoadmap = Boolean(skills.length > 0);
+  const [expanded, setExpanded] = useState('');
 
-  const stats = useMemo(() => {
-    const completed = skills.filter(s => s.status === 'completed').length;
-    const pending   = skills.filter(s => s.status !== 'completed').length;
-    const progress  = skills.length ? Math.round((completed / skills.length) * 100) : 0;
-    return { completed, pending, progress };
-  }, [skills]);
+  if (isRoadmapLoading) {
+    return <Card><Loading /></Card>;
+  }
 
-  const roadmapPath = useMemo(() => skills.map(s => s?.skill).filter(Boolean), [skills]);
+  if (skills.length === 0) {
+    return (
+      <Card>
+        <Empty>Generate a roadmap and its skills will appear here, in the order to learn them.</Empty>
+      </Card>
+    );
+  }
 
-  /* ── Loading ── */
-  if (isRoadmapLoading) return <LoadingSkeleton />;
+  const completed = skills.filter((s) => s.status === 'completed').length;
+  const pct = skills.length ? Math.round((completed / skills.length) * 100) : 0;
 
-  /* ── Empty ── */
-  if (!hasRoadmap) return (
-    <div className="backdrop-blur-xl bg-[#090b14]/70 rounded-[1.5rem] border border-white/5 p-20 text-center">
-      <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-5">
-        <Map size={28} className="text-indigo-400" />
-      </div>
-      <h2 className="text-xl font-bold text-white mb-2">No roadmap selected</h2>
-      <p className="text-slate-500 text-sm">Select a roadmap from the sidebar or generate a new one.</p>
-    </div>
-  );
+  // The first node that is not done is "current"; everything after it is future.
+  const currentIndex = skills.findIndex((s) => s.status !== 'completed');
+  const currentSkill = currentIndex >= 0 ? skills[currentIndex] : null;
+
+  const byCategory = skills.reduce((acc, s) => {
+    const key = s.category || 'Other';
+    if (!acc[key]) acc[key] = { total: 0, done: 0 };
+    acc[key].total += 1;
+    if (s.status === 'completed') acc[key].done += 1;
+    return acc;
+  }, {});
+
+  const gapReport = Object.entries(byCategory).slice(0, 4).map(([label, v]) => ({
+    label,
+    value: Math.round((v.done / v.total) * 100),
+  }));
 
   return (
-    <div className="space-y-6">
-
-      <style>{`
-        @keyframes shimmer {
-          0%   { transform: translateX(-100%); }
-          100% { transform: translateX(400%); }
-        }
-        .progress-shimmer::after {
-          content: '';
-          position: absolute; inset-y: 0; left: 0;
-          width: 25%;
-          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
-          animation: shimmer 2s ease-in-out infinite;
-        }
-        .step-card {
-          transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
-        }
-        .step-card:hover { transform: translateY(-2px); }
-        .step-card.pending:hover {
-          border-color: rgba(99,102,241,0.35) !important;
-          box-shadow: 0 0 32px -8px rgba(99,102,241,0.2);
-        }
-        .step-card.done {
-          border-color: rgba(52,211,153,0.2) !important;
-          box-shadow: 0 0 28px -10px rgba(52,211,153,0.12);
-        }
-        .resource-pill {
-          transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
-        }
-        .resource-pill:hover {
-          background: rgba(99,102,241,0.15);
-          border-color: rgba(99,102,241,0.4);
-          color: #a5b4fc;
-          transform: translateY(-1px);
-        }
-        .mark-btn {
-          transition: all 0.25s ease;
-        }
-        .mark-btn:not(:disabled):hover {
-          background: rgba(99,102,241,0.3);
-          border-color: rgba(99,102,241,0.6);
-          color: #fff;
-          transform: scale(1.04);
-          box-shadow: 0 4px 16px -4px rgba(99,102,241,0.4);
-        }
-      `}</style>
-
-      {/* ── Professional Learning Path Roadmap ──────────────────── */}
-      {roadmapPath.length > 0 && (() => {
-        const completedCount = skills.filter(s => s.status === 'completed').length;
-        const currentIdx     = completedCount; // first non-completed
-        return (
-          <div className="backdrop-blur-3xl bg-[#090b14]/70 rounded-[1.5rem] border border-white/5 shadow-2xl p-6 overflow-hidden">
-
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 rounded-lg bg-indigo-500/15 border border-indigo-500/25">
-                  <Map size={13} className="text-indigo-400" />
-                </div>
-                <p className="text-[11px] font-black uppercase tracking-widest text-indigo-400">Learning Path</p>
-              </div>
-              <div className="flex items-center gap-2 text-[11px]">
-                <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold">
-                  {completedCount}/{skills.length} done
-                </span>
-              </div>
+    <div className="stack-sm" style={{ display: 'grid', gridTemplateColumns: '1.55fr 1fr', gap: 22, alignItems: 'start' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 22, minWidth: 0 }}>
+      {/* The plan was built from the gaps known when it was generated, and
+          nothing rebuilds it on its own. Saying so beats showing a stale
+          plan as though it were current. */}
+      {roadmapData?.isStale && (
+        <Card
+          style={{
+            padding: '16px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 20,
+            flexWrap: 'wrap',
+            borderLeft: '3px solid var(--color-amber)',
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-ink)' }}>
+              You have assessed since this plan was built
             </div>
+            {/* Two different actions, and the difference matters: updating
+                keeps what you have finished, regenerating starts the plan
+                over. Only one of those was offered before. */}
+            <p style={{ fontSize: 14, color: 'var(--color-text-3)', margin: '5px 0 0' }}>
+              Updating rebuilds it around your latest results and keeps everything you have
+              marked done. Regenerating starts the plan over.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
+            {onAdapt && (
+              <Button variant="attention" onClick={onAdapt} loading={adapting} loadingLabel="Updating…">
+                Update this plan
+              </Button>
+            )}
+            {onRegenerate && (
+              <Button variant="secondary" onClick={onRegenerate}>
+                Start over
+              </Button>
+            )}
+          </div>
+        </Card>
+      )}
 
-            {/* Scrollable node strip */}
-            <div className="overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
-              <div className="flex items-start" style={{ minWidth: 'max-content', gap: 0 }}>
-                {skills.map((step, index) => {
-                  const isDone    = step.status === 'completed';
-                  const isCurrent = index === currentIdx;
-                  const isFuture  = index > currentIdx;
-                  const isLast    = index === skills.length - 1;
-                  const diffKey   = (step.difficulty || 'beginner').toLowerCase();
-                  const diffColor = diffKey === 'advanced' ? '#fb7185' : diffKey === 'intermediate' ? '#fbbf24' : '#34d399';
+      <Card>
+        <CardHeader
+          label="Learning path"
+          right={
+            <MicroLabel size={10.5} tracking="0.13em" color="var(--color-text-4)">
+              {`${completed} / ${skills.length} DONE`}
+            </MicroLabel>
+          }
+        />
 
-                  return (
-                    <div key={`node-${step.skill}-${index}`} className="flex items-start" style={{ gap: 0 }}>
-                      {/* Node + label */}
-                      <div className="flex flex-col items-center" style={{ width: 96 }}>
+        {skills.map((step, i) => {
+          const isDone = step.status === 'completed';
+          const isCurrent = i === currentIndex;
+          const busy = updatingSkill === step.skill;
+          const hasDetail = Boolean(step.resources?.length || step.mini_project || step.quiz_topic_id);
+          const isOpen = hasDetail && expanded === step.skill;
+          const statusKey = isDone ? 'done' : isCurrent ? 'current' : 'future';
 
-                        {/* Node circle */}
-                        <div className="relative flex items-center justify-center" style={{ height: 52 }}>
-                          {/* Outer glow ring for current */}
-                          {isCurrent && (
-                            <div className="absolute inset-0 rounded-full border-2 border-indigo-400/40 animate-ping" style={{ animationDuration: '2s' }} />
-                          )}
-                          <div className={`relative z-10 flex items-center justify-center rounded-full font-black text-sm border-2 shadow-lg transition-all duration-300 ${
-                            isDone
-                              ? 'w-12 h-12 bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-emerald-500/30'
-                              : isCurrent
-                              ? 'w-12 h-12 bg-indigo-500/25 border-indigo-400 text-indigo-200 shadow-indigo-500/40'
-                              : 'w-10 h-10 bg-white/4 border-white/15 text-slate-500'
-                          }`}>
-                            {isDone ? (
-                              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                                <polyline points="3.5,9 7,12.5 14.5,5.5" stroke="#34d399" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            ) : (
-                              <span className={isCurrent ? 'text-indigo-200' : 'text-slate-500'}>{index + 1}</span>
-                            )}
-                          </div>
-                        </div>
+          return (
+            <div
+              key={step.skill || i}
+              style={{
+                borderLeft: `3px solid ${STATUS_BORDER[statusKey]}`,
+                borderBottom: i === skills.length - 1 ? 'none' : '1px solid var(--color-line-soft)',
+              }}
+            >
+              <div
+                onClick={() => hasDetail && setExpanded(isOpen ? '' : step.skill)}
+                style={{
+                  padding: '14px 20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 16,
+                  background: isCurrent ? 'var(--color-surface-current)' : 'transparent',
+                  cursor: hasDetail ? 'pointer' : 'default',
+                  transition: 'background-color 120ms ease',
+                }}
+              >
+                <span
+                  onClick={(e) => { e.stopPropagation(); if (!busy && !isDone) onMarkCompleted?.(step.skill); }}
+                  title={isDone ? 'Completed' : 'Mark complete'}
+                  style={{ cursor: isDone ? 'default' : busy ? 'wait' : 'pointer', display: 'flex' }}
+                >
+                  <StatusBox status={statusKey} />
+                </span>
 
-                        {/* Difficulty dot + label */}
-                        <div className="flex flex-col items-center mt-2 px-1 text-center" style={{ maxWidth: 90 }}>
-                          <span
-                            className={`text-[11px] font-black leading-tight ${
-                              isDone ? 'text-emerald-300' : isCurrent ? 'text-white' : 'text-slate-500'
-                            }`}
-                            style={{ wordBreak: 'break-word', lineHeight: 1.3 }}
-                          >
-                            {step.skill}
-                          </span>
-                          <div className="flex items-center gap-1 mt-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: isFuture ? '#334155' : diffColor }} />
-                            <span className={`text-[9px] uppercase tracking-wider font-bold ${
-                              isFuture ? 'text-slate-600' : 'text-slate-400'
-                            }`}>{step.difficulty || 'Beginner'}</span>
-                          </div>
-                          {step.start_week && (
-                            <span className={`text-[9px] mt-0.5 ${
-                              isDone ? 'text-emerald-600' : isCurrent ? 'text-indigo-400' : 'text-slate-700'
-                            }`}>Wk {step.start_week}–{step.end_week}</span>
-                          )}
-                        </div>
+                <span
+                  style={{
+                    flex: 1,
+                    fontSize: 15,
+                    fontWeight: isCurrent ? 600 : 400,
+                    color: isDone ? 'var(--color-text-2)' : 'var(--color-ink)',
+                  }}
+                >
+                  {step.skill}
+                </span>
+
+                <MicroLabel
+                  size={11}
+                  tracking="0.1em"
+                  color={isDone ? 'var(--color-text-4)' : isCurrent ? 'var(--color-amber)' : 'var(--color-text-3)'}
+                >
+                  {busy ? 'Saving' : isDone ? 'Done' : isCurrent ? 'In progress' : 'Planned'}
+                </MicroLabel>
+
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11.5,
+                    color: 'var(--color-text-4)',
+                    width: 34,
+                    textAlign: 'right',
+                  }}
+                >
+                  {step.start_week ? `W${step.start_week}` : '—'}
+                </span>
+
+                {hasDetail && (
+                  <MicroLabel
+                    size={10}
+                    tracking="0.1em"
+                    color={isOpen ? 'var(--color-ink)' : 'var(--color-text-4)'}
+                    style={{ width: 44, textAlign: 'right', flexShrink: 0 }}
+                  >
+                    {isOpen ? 'Hide' : 'Info'}
+                  </MicroLabel>
+                )}
+              </div>
+
+              {isOpen && (
+                <div style={{ padding: '2px 20px 18px 47px', background: 'var(--color-surface-current)' }}>
+                  {step.mini_project && (
+                    <div style={{ marginBottom: step.resources?.length ? 16 : 0 }}>
+                      <MicroLabel size={10} tracking="0.12em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 6 }}>
+                        Mini project
+                      </MicroLabel>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-ink)' }}>
+                        {step.mini_project.title}
                       </div>
-
-                      {/* Connector between nodes */}
-                      {!isLast && (
-                        <div className="flex items-center" style={{ height: 52, paddingTop: 0 }}>
-                          <div className="relative flex items-center" style={{ width: 32 }}>
-                            {/* Track */}
-                            <div className="w-full h-0.5 rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }} />
-                            {/* Fill */}
-                            {isDone && (
-                              <div className="absolute inset-y-0 left-0 w-full rounded-full" style={{
-                                background: 'linear-gradient(90deg, #34d399, #6366f1)',
-                              }} />
-                            )}
-                            {/* Arrow head */}
-                            <svg className="absolute -right-1 shrink-0" width="8" height="8" viewBox="0 0 8 8">
-                              <polyline
-                                points="1,1 7,4 1,7"
-                                fill="none"
-                                stroke={isDone ? '#6366f1' : 'rgba(255,255,255,0.12)'}
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            </svg>
-                          </div>
-                        </div>
+                      {step.mini_project.description && (
+                        <p style={{ fontSize: 13.5, color: 'var(--color-text-3)', margin: '4px 0 0', lineHeight: 1.5 }}>
+                          {step.mini_project.description}
+                        </p>
                       )}
                     </div>
-                  );
-                })}
-              </div>
-            </div>
+                  )}
 
-            {/* Legend */}
-            <div className="flex items-center gap-4 mt-5 pt-4 border-t border-white/5">
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-emerald-500/30 border border-emerald-400" />
-                <span className="text-[10px] text-slate-500 font-medium">Completed</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-indigo-500/30 border border-indigo-400" />
-                <span className="text-[10px] text-slate-500 font-medium">Current</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-white/5 border border-white/15" />
-                <span className="text-[10px] text-slate-500 font-medium">Upcoming</span>
-              </div>
-              <div className="ml-auto flex items-center gap-1.5">
-                <span className="text-[10px] text-slate-600">Scroll to see all steps →</span>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Progress Card ────────────────────────────────────────── */}
-      <div className="backdrop-blur-3xl bg-[#090b14]/70 rounded-[1.5rem] border border-white/5 shadow-2xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-5">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
-              <span className="text-slate-300 font-medium">{stats.completed} <span className="text-slate-500">Completed</span></span>
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]" />
-              <span className="text-slate-300 font-medium">{stats.pending} <span className="text-slate-500">Remaining</span></span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-2xl font-black text-white tracking-tight">{stats.progress}<span className="text-sm text-slate-400 font-medium">%</span></span>
-          </div>
-        </div>
-
-        {/* Bar */}
-        <div className="h-3 bg-white/5 rounded-full overflow-hidden relative">
-          <div
-            className="h-full rounded-full relative overflow-hidden progress-shimmer"
-            style={{
-              width: `${stats.progress}%`,
-              background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #38bdf8)',
-              transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)',
-            }}
-          />
-        </div>
-
-        {/* Step labels */}
-        <div className="flex justify-between mt-2 px-0.5">
-          <span className="text-[10px] text-slate-600">Start</span>
-          <span className="text-[10px] text-slate-600">{skills.length} Steps Total</span>
-        </div>
-      </div>
-
-      {/* ── Vertical Timeline ────────────────────────────────────── */}
-      <div className="relative">
-        {/* Connector line */}
-        <div className="absolute left-[27px] top-0 bottom-0 w-px bg-gradient-to-b from-indigo-500/40 via-violet-500/20 to-transparent" />
-
-        <div className="space-y-4">
-          {skills.map((step, index) => {
-            const isCompleted   = step.status === 'completed';
-            const isUpdating    = updatingSkill === step.skill;
-            const diffKey       = (step.difficulty || 'beginner').toLowerCase();
-            const diff          = DIFFICULTY[diffKey] || DIFFICULTY.beginner;
-            const isActive      = roadmapData.status === 'active';
-
-            return (
-              <div key={`${step.skill}-${index}`} className="relative flex gap-4 pl-0">
-
-                {/* Step circle indicator */}
-                <div className="relative z-10 shrink-0" style={{ width: 56 }}>
-                  <div className={`w-[54px] h-[54px] rounded-full flex flex-col items-center justify-center border-2 shadow-lg text-xs font-black transition-all duration-300 ${
-                    isCompleted
-                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300 shadow-emerald-500/20'
-                      : 'bg-[#0c0f1e] border-indigo-500/30 text-indigo-300 shadow-indigo-500/10'
-                  }`}>
-                    {isCompleted ? (
-                      <CheckCircle2 size={22} className="text-emerald-400" />
-                    ) : (
-                      <>
-                        <span className="text-[9px] text-slate-500 uppercase tracking-widest leading-none">Step</span>
-                        <span className="text-base leading-tight">{index + 1}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Card */}
-                <div className={`step-card flex-1 backdrop-blur-3xl bg-[#090b14]/70 rounded-[1.5rem] border shadow-2xl p-5 ${
-                  isCompleted ? 'done border-emerald-500/15' : 'pending border-white/5'
-                }`}>
-
-                  {/* Top row */}
-                  <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
-
-                    {/* Left: title + meta */}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[10px] uppercase tracking-widest text-slate-600 font-bold mb-1">Step {index + 1}</p>
-
-                      <h3 className={`text-lg font-black tracking-tight leading-tight mb-2 ${
-                        isCompleted ? 'text-emerald-300 line-through decoration-emerald-500/40' : 'text-white'
-                      }`}>
-                        {step.skill}
-                      </h3>
-
-                      {/* Meta chips */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        {step.category && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 border border-white/8 text-[11px] text-slate-400 font-medium">
-                            <BookOpen size={10} className="text-indigo-400" />
-                            {step.category}
-                          </span>
-                        )}
-                        {step.start_week && step.end_week && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[11px] text-indigo-400 font-medium">
-                            <Calendar size={10} />
-                            Week {step.start_week}–{step.end_week}
-                          </span>
-                        )}
-                        {step.hours_allocated != null && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-500/10 border border-violet-500/20 text-[11px] text-violet-400 font-medium">
-                            <Clock size={10} />
-                            {step.hours_allocated} hrs
-                          </span>
-                        )}
-                      </div>
+                  {step.resources?.length > 0 && (
+                    <div>
+                      <MicroLabel size={10} tracking="0.12em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 8 }}>
+                        Resources
+                      </MicroLabel>
+                      <ResourceList resources={step.resources} />
                     </div>
+                  )}
 
-                    {/* Right: difficulty + action */}
-                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                      <span className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-full border ${diff.cls}`}>
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: diff.dot }} />
-                        {step.difficulty || 'Beginner'}
-                      </span>
-
-                      <button
-                        type="button"
-                        onClick={() => onMarkCompleted(step.skill)}
-                        disabled={isUpdating || isCompleted || !isActive}
-                        className={`mark-btn px-4 py-1.5 rounded-xl text-xs font-black border transition-all duration-200 ${
-                          isCompleted
-                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25 cursor-default'
-                            : isUpdating
-                            ? 'bg-slate-800 text-slate-500 border-white/5 cursor-wait'
-                            : !isActive
-                            ? 'bg-white/5 text-slate-600 border-white/5 cursor-not-allowed'
-                            : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 cursor-pointer'
-                        }`}
+                  {/* Marking done is self-reported; this offers to check it
+                      instead. The quiz covers the topic the skill sits in,
+                      which is broader than the skill itself — so it is
+                      offered as a check, not as proof of completion. */}
+                  {step.quiz_topic_id && onTestSkill && (
+                    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--color-line-soft)' }}>
+                      <MicroLabel size={10} tracking="0.13em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 8 }}>
+                        Check yourself
+                      </MicroLabel>
+                      <p style={{ fontSize: 13.5, color: 'var(--color-text-3)', lineHeight: 1.5, margin: '0 0 12px' }}>
+                        {`Sit the ${step.quiz_topic_name} assessment. The score feeds back into this plan.`}
+                      </p>
+                      <Button
+                        variant="secondary"
+                        style={{ padding: '9px 16px', fontSize: 13.5 }}
+                        onClick={(e) => { e.stopPropagation(); onTestSkill(step); }}
                       >
-                        {isUpdating ? (
-                          <span className="flex items-center gap-1.5">
-                            <Loader2 size={11} className="animate-spin" /> Saving…
-                          </span>
-                        ) : isCompleted ? (
-                          <span className="flex items-center gap-1">
-                            <CheckCircle2 size={11} /> Done
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <Zap size={11} /> Mark Complete
-                          </span>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Resources */}
-                  {(step.resources || []).length > 0 && (
-                    <div className="mt-4 pt-4 border-t border-white/5">
-                      <p className="text-[10px] uppercase tracking-widest text-slate-600 font-bold mb-2">Resources</p>
-                      <div className="flex flex-wrap gap-2">
-                        {(step.resources || []).map((resource, idx) => (
-                          <a
-                            key={`${resource.title || 'r'}-${idx}`}
-                            href={resource.url || '#'}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="resource-pill inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/4 px-3 py-1.5 text-[11px] text-slate-400 font-medium"
-                          >
-                            <LinkIcon size={10} className="text-indigo-400 shrink-0" />
-                            {resource.title || 'Resource'}
-                          </a>
-                        ))}
-                      </div>
+                        Test me on this
+                      </Button>
                     </div>
                   )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              )}
+            </div>
+          );
+        })}
+
+        <CardFooterNote>Click the marker to mark a skill complete, click the row for its resources.</CardFooterNote>
+      </Card>
+
+      <WeeklyPlan weeks={roadmapData?.weeklyPlans} skills={skills} />
       </div>
 
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        <Card>
+          <CardHeader label="Current focus" />
+          <div style={{ padding: '20px 22px' }}>
+            {currentSkill && (currentSkill.category || currentSkill.difficulty) && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                {currentSkill.category && <Badge tone="muted">{currentSkill.category}</Badge>}
+                {currentSkill.difficulty && <Badge tone="amber">{currentSkill.difficulty}</Badge>}
+              </div>
+            )}
+
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-ink)' }}>
+              {currentSkill ? currentSkill.skill : 'Everything is complete'}
+            </div>
+            <p style={{ fontSize: 14.5, color: 'var(--color-text-2)', margin: '8px 0 18px', lineHeight: 1.55 }}>
+              {currentSkill
+                ? currentSkill.mini_project?.title || `Part of ${currentSkill.category || 'your track'}.`
+                : 'Every skill on this roadmap is marked done.'}
+            </p>
+
+            <div style={{ borderTop: '1px solid var(--color-line-soft)' }}>
+              {[
+                { label: 'Progress', value: `${pct}%`, amber: false },
+                { label: 'Weeks planned', value: roadmapData?.duration || '—', amber: false },
+                { label: 'Remaining', value: skills.length - completed, amber: skills.length - completed > 0 },
+              ].map((row) => (
+                <div
+                  key={row.label}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '11px 0',
+                    borderBottom: '1px solid var(--color-line-soft)',
+                    fontSize: 14,
+                    color: 'var(--color-text-2)',
+                  }}
+                >
+                  <span>{row.label}</span>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 13,
+                      color: row.amber ? 'var(--color-amber)' : 'var(--color-ink)',
+                    }}
+                  >
+                    {row.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {currentSkill && (
+              <Button
+                fullWidth
+                style={{ marginTop: 20 }}
+                onClick={() => onMarkCompleted?.(currentSkill.skill)}
+                loading={updatingSkill === currentSkill.skill}
+                loadingLabel="Saving…"
+              >
+                Mark done
+              </Button>
+            )}
+
+            {currentSkill?.resources?.length > 0 && (
+              <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--color-line-soft)' }}>
+                <MicroLabel size={10} tracking="0.12em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 10 }}>
+                  Resources
+                </MicroLabel>
+                <ResourceList resources={currentSkill.resources} />
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <InterviewReadiness latest={latestInterview} role={targetRole} loading={loadingInterview} />
+
+        <Card>
+          <CardHeader label="Gap report" />
+          <div style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {gapReport.map((g) => (
+              <LabelledBar
+                key={g.label}
+                label={g.label}
+                value={g.value}
+                display={`${g.value}%`}
+                max={100}
+                tone={g.value >= 70 ? 'green' : g.value >= 35 ? 'amber' : 'clay'}
+              />
+            ))}
+          </div>
+        </Card>
+      </div>
     </div>
   );
 };

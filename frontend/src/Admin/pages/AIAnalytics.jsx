@@ -1,130 +1,125 @@
 import React from 'react';
-import AdminSidebar from '../component/AdminSidebar';
-import AdminNavbar from '../component/AdminNavbar';
-import StatCard from '../component/StatCard';
-import ChartCard from '../component/ChartCard';
-import { Zap, TrendingUp, ClipboardList, Map } from 'lucide-react';
-import BackgroundAnimation from '../../Pages/Assessment/AssesmentDashboard/components/BackgroundAnimation';
+import {
+  AdminShell, Card, CardHeader, StatStrip, InkPanel, LabelledBar, ShareChart,
+  MicroLabel, Button, Loading, Empty,
+} from '../../design';
+import { adminNav } from '../../design/nav';
+import { getAnalytics } from '../services/adminService';
+import { useAdminData } from '../useAdminData';
 
+/**
+ * Spec §7 Admin · AI analytics.
+ *
+ * A five-cell stat strip, then `1fr 1fr`: a four-bar normalised card on the
+ * left; on the right, stacked, a share chart and an ink panel.
+ *
+ * This reports what the AI produced, which is countable, rather than how many
+ * times it was called or what it cost — nothing logs either. The ink panel
+ * says so instead of printing a token figure nobody measured.
+ */
 const AIAnalytics = () => {
-  const statsData = {
-    totalRequests: 842,
-    todayRequests: 37,
-    quizGenerations: 512,
-    roadmapGenerations: 330,
-  };
+  const { data, loading, error, reload } = useAdminData(getAnalytics);
 
-  const skillsData = [
-    { name: 'DSA', value: 120 },
-    { name: 'MERN', value: 95 },
-    { name: 'Java', value: 80 },
-    { name: 'Python', value: 60 },
-  ];
+  if (loading) {
+    return (
+      <AdminShell items={adminNav} title="AI analytics">
+        <Card><Loading /></Card>
+      </AdminShell>
+    );
+  }
 
-  const difficultyData = [
-    { name: 'Easy', value: 200 },
-    { name: 'Medium', value: 150 },
-    { name: 'Hard', value: 100 },
-  ];
+  if (error) {
+    return (
+      <AdminShell items={adminNav} title="AI analytics">
+        <Card>
+          <Empty action={<Button onClick={reload}>Try again</Button>}>{error}</Empty>
+        </Card>
+      </AdminShell>
+    );
+  }
 
-  const tokenData = {
-    totalTokens: 125000,
-    avgTokensPerRequest: 148,
-  };
+  const roles = data.requestedRoles || [];
+  const peak = Math.max(...roles.map((r) => r.value), 1);
 
   return (
-    <div className="flex h-screen bg-black relative overflow-hidden">
-      <BackgroundAnimation />
+    <AdminShell items={adminNav} title="AI analytics">
+      <StatStrip items={data.stats} />
 
-      {/* Sidebar */}
-      <AdminSidebar />
-
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden relative z-10">
-        {/* Navbar */}
-        <AdminNavbar />
-
-        {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Page Header */}
-          <div>
-            <h1 className="text-2xl font-semibold text-gray-100">AI Analytics</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Monitor AI usage, generation patterns, and system activity.
-            </p>
-          </div>
-
-          {/* Section 1: AI Overview Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <StatCard
-              title="Total AI Requests"
-              value={statsData.totalRequests}
-              icon={Zap}
-              change={15}
-              changeType="increase"
-            />
-            <StatCard
-              title="Requests Today"
-              value={statsData.todayRequests}
-              icon={TrendingUp}
-              change={8}
-              changeType="increase"
-            />
-            <StatCard
-              title="Total Quiz Generations"
-              value={statsData.quizGenerations}
-              icon={ClipboardList}
-              change={12}
-              changeType="increase"
-            />
-            <StatCard
-              title="Total Roadmap Generations"
-              value={statsData.roadmapGenerations}
-              icon={Map}
-              change={5}
-              changeType="increase"
-            />
-          </div>
-
-          {/* Section 2: Charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ChartCard
-              title="Most Requested Skills"
-              subtitle="Top skills requested by users"
-              data={skillsData}
-              type="bar"
-            />
-            <ChartCard
-              title="Difficulty Distribution"
-              subtitle="Quiz difficulty breakdown"
-              data={difficultyData}
-              type="pie"
-            />
-          </div>
-
-          {/* Section 3: Token Usage Summary */}
-          <div className="backdrop-blur-xl bg-slate-900/60 border border-white/10 rounded-xl p-6">
-            <h3 className="text-lg font-semibold text-gray-100 mb-4">
-              Token Usage Summary
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <p className="text-sm text-gray-400">Total Tokens Used</p>
-                <p className="text-2xl font-semibold text-gray-100 mt-1">
-                  {tokenData.totalTokens.toLocaleString()}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-400">Average Tokens per Request</p>
-                <p className="text-2xl font-semibold text-gray-100 mt-1">
-                  {tokenData.avgTokensPerRequest}
-                </p>
-              </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 22, alignItems: 'start' }}>
+        <Card>
+          <CardHeader
+            label="Most requested tracks"
+            right={
+              roles.length > 0 && (
+                <MicroLabel size={10.5} tracking="0.13em" color="var(--color-text-4)">
+                  {`PEAK ${peak}`}
+                </MicroLabel>
+              )
+            }
+          />
+          {roles.length === 0 ? (
+            <Empty>No roadmap has been generated yet.</Empty>
+          ) : (
+            // Normalised against the busiest track, so the bars compare with
+            // each other rather than against an arbitrary 100.
+            <div style={{ padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {roles.map((role) => (
+                <LabelledBar
+                  key={role.label}
+                  label={role.label}
+                  value={role.value}
+                  display={role.value}
+                  max={peak}
+                />
+              ))}
             </div>
-          </div>
-        </main>
+          )}
+        </Card>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          <Card>
+            <CardHeader label="Difficulty share" />
+            {(data.difficultySplit || []).length === 0 ? (
+              <Empty>Nothing to split yet.</Empty>
+            ) : (
+              <div style={{ padding: '22px 24px' }}>
+                <ShareChart data={data.difficultySplit} />
+              </div>
+            )}
+          </Card>
+
+          <InkPanel label="Token usage">
+            {data.tokenUsage ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 34, letterSpacing: '-0.02em', color: '#fff' }}>
+                    {(data.tokenUsage.total / 1000).toFixed(0)}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--color-dark-text-3)' }}>
+                    K TOKENS
+                  </span>
+                </div>
+                <span style={{ fontSize: 14.5, lineHeight: 1.55, color: 'var(--color-dark-text-2)' }}>
+                  {`About ${data.tokenUsage.averagePerRequest} tokens per request.`}
+                </span>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 34, letterSpacing: '-0.02em', color: 'var(--color-dark-text-3)' }}>
+                    —
+                  </span>
+                </div>
+                <span style={{ fontSize: 14.5, lineHeight: 1.55, color: 'var(--color-dark-text-2)' }}>
+                  Nothing records per-call token spend yet, so there is no figure to report. The
+                  counts above are what the AI produced, not what it cost.
+                </span>
+              </>
+            )}
+          </InkPanel>
+        </div>
       </div>
-    </div>
+    </AdminShell>
   );
 };
 

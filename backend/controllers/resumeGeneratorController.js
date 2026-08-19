@@ -1,6 +1,7 @@
 import GeneratedResume from '../models/GeneratedResume.js';
 import ResumeValidator from '../utils/resumeValidator.js';
 import resumeGeneratorService from '../services/resumeGeneratorService.js';
+import { convertDocxUrlToPdf } from '../services/pdfConversionService.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,8 +14,18 @@ const __dirname = path.dirname(__filename);
  */
 export const generateResume = async (req, res) => {
   try {
-    const { resumeData } = req.body;
+    const { resumeData, format } = req.body;
     const userId = req.user.id;
+
+    // This endpoint only produces DOCX; the client converts to PDF afterwards.
+    // It used to accept any format and return DOCX regardless, so a caller
+    // asking for PDF got a .docx file and no indication anything was wrong.
+    if (format !== undefined && String(format).toLowerCase() !== 'docx') {
+      return res.status(400).json({
+        success: false,
+        message: `Unsupported format '${format}'. This endpoint generates DOCX only.`
+      });
+    }
 
     // Validate resume data structure
     const validation = ResumeValidator.validate(resumeData);
@@ -67,6 +78,52 @@ export const generateResume = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Resume generation failed',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Convert one of the caller's generated resumes to PDF
+ * POST /api/resume-generator/convert-to-pdf
+ *
+ * Takes a filename rather than a URL on purpose: the resume is looked up scoped
+ * to the caller, so this cannot be used to push arbitrary URLs through the
+ * conversion API.
+ */
+export const convertResumeToPdf = async (req, res) => {
+  try {
+    const { filename } = req.body;
+    const userId = req.user.id;
+
+    if (!filename) {
+      return res.status(400).json({
+        success: false,
+        message: 'filename is required'
+      });
+    }
+
+    const resume = await GeneratedResume.findOne({ userId, filename });
+
+    if (!resume) {
+      return res.status(404).json({
+        success: false,
+        message: 'Resume not found'
+      });
+    }
+
+    const pdfUrl = await convertDocxUrlToPdf(resume.resumeUrl);
+
+    res.status(200).json({
+      success: true,
+      message: 'Resume converted successfully',
+      data: { pdfUrl }
+    });
+  } catch (error) {
+    console.error('PDF conversion error:', error);
+    res.status(502).json({
+      success: false,
+      message: 'PDF conversion failed',
       error: error.message
     });
   }

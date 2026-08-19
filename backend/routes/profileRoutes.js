@@ -4,11 +4,13 @@ import {
   getProfile,
   updateProfile,
   updateSettings,
+  markTourSeen,
   uploadProfilePicture,
   deleteProfilePicture,
   updateBasic,
   updateSkills,
-  updateAvailability
+  updateAvailability,
+  getActivitySummary
 } from '../controllers/profileController.js';
 
 const router = express.Router();
@@ -16,11 +18,13 @@ const router = express.Router();
 
 router.use(protect);
 router.get('/', getProfile);
+router.get('/activity', getActivitySummary);
 router.put('/', updateProfile);
 router.put('/basic', updateBasic);
 router.put('/skills', updateSkills);
 router.put('/availability', updateAvailability);
 router.put('/settings', updateSettings);
+router.put('/tour-seen', markTourSeen);
 router.post('/upload-picture', uploadProfilePicture);
 router.delete('/delete-picture', deleteProfilePicture);
 

@@ -3,9 +3,34 @@ import { v4 as uuidv4 } from "uuid";
 import Roadmap from "../models/Roadmap.js";
 import User from "../models/userModel.js";
 import SkillGap from "../models/SkillGap.js";
+import Topic from "../models/Topic.js";
+import { topicForSkill } from "../utils/skillTopicMap.js";
+import { scheduleForPlan, completionUpdateFor } from "../utils/planSchedule.js";
+import {
+    canDeleteRoadmap,
+    isCurrentPlan,
+    progressHeldBy,
+    totalProgressHeldBy,
+} from "../utils/roadmapDeletion.js";
+import Settings from "../models/Settings.js";
+import { mergeRoadmapProgress } from "../utils/mergeRoadmapProgress.js";
 
 const AI_SERVICE_URL =
     process.env.AI_SERVICE_URL || "http://localhost:8000";
+
+/**
+ * Long enough for the Python service to be started from cold.
+ *
+ * It sleeps after a quiet spell on Render's free tier and a measured cold
+ * start took 162 seconds — so the twenty and thirty second timeouts these
+ * calls used to carry could not have succeeded on a first request, whatever
+ * the service was doing. It reported itself unreachable while it was in fact
+ * waking up, and the person waiting was told to try again in a moment.
+ *
+ * services/aiWarmup.js is what usually prevents the cold start; this is what
+ * makes one survivable when it happens anyway.
+ */
+const AI_TIMEOUT_MS = 180000;
 
 const normalizeExperienceLevel = (value) => {
     if (!value) {
@@ -18,11 +43,16 @@ const normalizeExperienceLevel = (value) => {
     return validLevels.includes(normalized) ? normalized : "";
 };
 
-const resolveRoadmapProfile = (user) => {
-    const targetRole = user.target_role || user.profile?.targetRole || "";
-    const experienceLevel = normalizeExperienceLevel(
-        user.experience_level || user.profile?.occupation?.experienceLevel
-    );
+const resolveRoadmapProfile = (user, settings) => {
+    const targetRole = user.target_role || "";
+    // The admin's default is the fallback, which is what "used when a learner
+    // does not pick one" on the settings screen has always claimed. Without it
+    // an unset level reached the generator as "" and silently took a 1.0
+    // multiplier, so the setting could be changed with no effect at all.
+    const experienceLevel =
+        normalizeExperienceLevel(
+            user.experience_level || user.profile?.occupation?.experienceLevel
+        ) || normalizeExperienceLevel(settings?.defaultLevel) || "beginner";
     const hoursPerWeek =
         user.hours_per_week || user.profile?.availableLearningTime || 10;
     const learningStyle = user.learning_style || user.profile?.learningStyle || "mixed";
@@ -34,6 +64,15 @@ const resolveRoadmapProfile = (user) => {
         learningStyle,
     };
 };
+
+/**
+ * The plan in play: the one being worked on, or the one just finished.
+ *
+ * Completing a plan used to take it out of reach of every route that looks
+ * one up, because they all asked for status "active" — so the last tick froze
+ * the plan and unticking it was impossible.
+ */
+const LIVE_STATUSES = ["active", "completed"];
 
 const normalizeCurrentSkillsForAI = (currentSkills) => {
     if (!Array.isArray(currentSkills)) {
@@ -75,8 +114,11 @@ export const generateRoadmap = async (req, res) => {
         const userId = req.user._id;
 
         // 1. Fetch user profile
-        const user = await User.findById(userId);
-        const roadmapProfile = resolveRoadmapProfile(user || {});
+        const [user, settings] = await Promise.all([
+            User.findById(userId),
+            Settings.current(),
+        ]);
+        const roadmapProfile = resolveRoadmapProfile(user || {}, settings);
         const profileIsComplete = Boolean(
             user &&
             (user.profile_complete ||
@@ -101,20 +143,26 @@ export const generateRoadmap = async (req, res) => {
             await user.save({ validateBeforeSave: false });
         }
 
-        // 2. Fetch latest skill gap analysis
-        const skillGap = await SkillGap.findOne({ user_id: userId }).sort({
+        // 2. Fetch the skill gap analysis for this role. Scores earned against
+        // a different curriculum use different skill names, so they would
+        // never match this role's template — reading them would be noise.
+        const skillGap = await SkillGap.findOne({
+            user_id: userId,
+            target_role: roadmapProfile.targetRole,
+        }).sort({
             createdAt: -1,
         });
 
         if (!skillGap) {
             console.info(
-                `No skill gap analysis found for user='${userId}'. Generating full roadmap from profile only.`
+                `No skill gap analysis found for user='${userId}' role='${roadmapProfile.targetRole}'. Generating full roadmap from profile only.`
             );
         }
 
-        // 3. Mark old roadmaps as regenerated
+        // 3. Supersede the previous roadmap for this role only, so a plan for
+        // another track the user may return to is left alone.
         await Roadmap.updateMany(
-            { user_id: userId, status: "active" },
+            { user_id: userId, status: "active", target_role: roadmapProfile.targetRole },
             { status: "regenerated" }
         );
 
@@ -126,10 +174,17 @@ export const generateRoadmap = async (req, res) => {
             hours_per_week: roadmapProfile.hoursPerWeek,
             learning_style: roadmapProfile.learningStyle,
             skill_gaps: skillGap?.skill_gaps || [],
-            skill_scores: skillGap?.skill_scores
-                ? Object.fromEntries(skillGap.skill_scores)
-                : {},
+            // Derived rather than stored: one score per skill, kept on
+            // skill_gaps, reshaped into the name->score map the AI service
+            // expects. Skill names legitimately contain dots.
+            skill_scores: Object.fromEntries(
+                (skillGap?.skill_gaps || []).map((gap) => [gap.skill, gap.current_score])
+            ),
             current_skills: normalizeCurrentSkillsForAI(user.current_skills),
+            // "Modules per roadmap" on the admin settings screen. Applied in
+            // the generator, after the dependency sort, so the skills that
+            // survive still arrive in a workable order.
+            max_modules: settings.maxModules,
         };
 
         let aiResult;
@@ -137,7 +192,7 @@ export const generateRoadmap = async (req, res) => {
             const response = await axios.post(
                 `${AI_SERVICE_URL}/api/roadmap/generate`,
                 aiPayload,
-                { timeout: 30000 }
+                { timeout: AI_TIMEOUT_MS }
             );
             aiResult = response.data;
         } catch (aiError) {
@@ -163,9 +218,11 @@ export const generateRoadmap = async (req, res) => {
             status: "active",
             metadata: {
                 generated_at: new Date(),
-                generation_method: "hybrid",
-                ai_model_used:
-                    aiResult.model_used || "gpt-4o-mini",
+                // Record what the AI service actually reports. The old default
+                // labelled roadmaps "gpt-4o-mini" even though no OpenAI client
+                // exists anywhere in this project, so stored provenance was wrong.
+                generation_method: aiResult.model_used || "unknown",
+                ai_model_used: aiResult.model_used || "unknown",
             },
         });
 
@@ -198,10 +255,19 @@ export const generateRoadmap = async (req, res) => {
 // ─────────────────────────────────────────────
 export const getRoadmap = async (req, res) => {
     try {
-        const roadmap = await Roadmap.findOne({
-            user_id: req.user._id,
-            status: "active",
-        }).sort({ createdAt: -1 });
+        // Show the plan for the role the user is currently working towards.
+        // Changing role therefore reveals that role's roadmap rather than a
+        // stale one for a track they have left, and changing back brings the
+        // original plan straight back instead of forcing a regenerate.
+        const user = await User.findById(req.user._id).select("target_role");
+        // Completed as well as active: finishing every week must not make the
+        // plan disappear and the page offer to generate a first one.
+        const query = { user_id: req.user._id, status: { $in: LIVE_STATUSES } };
+        if (user?.target_role) {
+            query.target_role = user.target_role;
+        }
+
+        const roadmap = await Roadmap.findOne(query).sort({ createdAt: -1 });
 
         if (!roadmap) {
             return res.status(404).json({
@@ -210,7 +276,12 @@ export const getRoadmap = async (req, res) => {
             });
         }
 
-        res.status(200).json({ success: true, data: roadmap });
+        res.status(200).json({
+            success: true,
+            // Worked out on read so it can never disagree with the ticks it
+            // is counting.
+            data: { ...roadmap.toObject(), schedule: scheduleForPlan(roadmap) },
+        });
     } catch (err) {
         console.error("getRoadmap error:", err);
         res.status(500).json({
@@ -229,7 +300,7 @@ export const getRoadmapById = async (req, res) => {
         const roadmap = await Roadmap.findOne({
             roadmap_id: req.params.roadmap_id,
             user_id: req.user._id,
-        });
+        }).lean();
 
         if (!roadmap) {
             return res
@@ -237,7 +308,52 @@ export const getRoadmapById = async (req, res) => {
                 .json({ success: false, message: "Roadmap not found." });
         }
 
-        res.status(200).json({ success: true, data: roadmap });
+        // A plan is built from the skill gaps known at the time. Assessments
+        // taken since then are not reflected in it, and nothing regenerates
+        // automatically — so the screen needs to be able to say so rather
+        // than presenting an out-of-date plan as current.
+        const skillGap = await SkillGap.findOne({
+            user_id: req.user._id,
+            target_role: roadmap.target_role,
+        })
+            .select("updatedAt")
+            .lean();
+
+        const assessedAt = skillGap?.updatedAt || null;
+
+        // Marking a skill done is self-reported. Where a skill has a topic in
+        // the quiz catalogue, the plan can offer to test it instead — so each
+        // skill carries the topic that covers it, when one exists. Skills like
+        // "REST API Design" have no topic and simply carry none.
+        const topicNames = [
+            ...new Set(
+                (roadmap.skills || []).map((s) => topicForSkill(s.skill)).filter(Boolean)
+            ),
+        ];
+        const topicIdByName = new Map(
+            topicNames.length
+                ? (await Topic.find({ name: { $in: topicNames }, isActive: true })
+                      .select("name")
+                      .lean()).map((t) => [t.name, String(t._id)])
+                : []
+        );
+
+        const skills = (roadmap.skills || []).map((s) => {
+            const topicName = topicForSkill(s.skill);
+            const topicId = topicName ? topicIdByName.get(topicName) : undefined;
+            return topicId ? { ...s, quiz_topic_id: topicId, quiz_topic_name: topicName } : s;
+        });
+
+        res.status(200).json({
+            success: true,
+            data: {
+                ...roadmap,
+                schedule: scheduleForPlan(roadmap),
+                skills,
+                is_stale: Boolean(assessedAt && new Date(assessedAt) > new Date(roadmap.createdAt)),
+                assessed_at: assessedAt,
+            },
+        });
     } catch (err) {
         console.error("getRoadmapById error:", err);
         res.status(500).json({
@@ -253,15 +369,33 @@ export const getRoadmapById = async (req, res) => {
 // ─────────────────────────────────────────────
 export const getRoadmapHistory = async (req, res) => {
     try {
-        const roadmaps = await Roadmap.find({
-            user_id: req.user._id,
-        })
-            .sort({ createdAt: -1 })
-            .select(
-                "roadmap_id target_role total_duration_weeks status version metadata.generated_at"
-            );
+        const [user, roadmaps] = await Promise.all([
+            User.findById(req.user._id).select("target_role").lean(),
+            Roadmap.find({ user_id: req.user._id })
+                .sort({ createdAt: -1 })
+                .select(
+                    "roadmap_id target_role total_duration_weeks status version metadata.generated_at started_at skills weekly_plans"
+                )
+                .lean(),
+        ]);
 
-        res.status(200).json({ success: true, data: roadmaps });
+        // Thirteen rows reading "AI/ML Engineer" with only a date to tell them
+        // apart is a list nobody can act on — least of all to decide which one
+        // to delete. Each row says how long the plan is, how much of it was
+        // finished, and whether it is the one being worked from.
+        const data = roadmaps.map((roadmap) => {
+            const { skills, weekly_plans: weeks, ...rest } = roadmap;
+            return {
+                ...rest,
+                skill_count: (skills || []).length,
+                week_count: (weeks || []).length,
+                progress: progressHeldBy(roadmap),
+                is_current: isCurrentPlan(roadmap, user?.target_role),
+                can_delete: canDeleteRoadmap(roadmap, user?.target_role).allowed,
+            };
+        });
+
+        res.status(200).json({ success: true, data });
     } catch (err) {
         console.error("getRoadmapHistory error:", err);
         res.status(500).json({
@@ -300,7 +434,7 @@ export const updateSkillStatus = async (req, res) => {
 
         const roadmap = await Roadmap.findOne({
             user_id: req.user._id,
-            status: "active",
+            status: { $in: LIVE_STATUSES },
         });
 
         if (!roadmap) {
@@ -321,6 +455,13 @@ export const updateSkillStatus = async (req, res) => {
         }
 
         skillNode.status = status;
+
+        // A week counts as done when every skill it covers is done, so
+        // completing the last skill can finish the plan just as ticking the
+        // last task can. Same helper, so the two routes cannot disagree.
+        const skillCompletion = completionUpdateFor(roadmap);
+        if (skillCompletion) Object.assign(roadmap, skillCompletion);
+
         await roadmap.save();
 
         res.status(200).json({
@@ -335,5 +476,400 @@ export const updateSkillStatus = async (req, res) => {
             message: "Server error.",
             error: err.message,
         });
+    }
+};
+
+/**
+ * PATCH /api/roadmap/task-status — tick or untick one task in a week.
+ *
+ * Weeks already had a status but nothing could set it, and the smallest thing
+ * a learner could mark was a whole skill — three and a half weeks of work on
+ * the MERN track between one tick and the next. This is the unit people
+ * actually finish in an evening.
+ */
+export const updateTaskStatus = async (req, res) => {
+    try {
+        const { week_number: weekNumber, task_index: taskIndex, done } = req.body || {};
+
+        if (!Number.isInteger(weekNumber) || !Number.isInteger(taskIndex)) {
+            return res.status(400).json({
+                success: false,
+                message: "week_number and task_index must be integers.",
+            });
+        }
+        if (typeof done !== "boolean") {
+            return res.status(400).json({ success: false, message: "done must be true or false." });
+        }
+
+        const roadmap = await Roadmap.findOne({
+            user_id: req.user._id,
+            status: { $in: LIVE_STATUSES },
+        });
+        if (!roadmap) {
+            return res.status(404).json({ success: false, message: "Active roadmap not found." });
+        }
+
+        const week = roadmap.weekly_plans.find((w) => w.week_number === weekNumber);
+        if (!week) {
+            return res.status(404).json({ success: false, message: `Week ${weekNumber} not found.` });
+        }
+        // Bounds are checked against the stored tasks, so an index from a stale
+        // page cannot write a tick that points at nothing.
+        if (taskIndex < 0 || taskIndex >= week.tasks.length) {
+            return res.status(400).json({
+                success: false,
+                message: `Week ${weekNumber} has ${week.tasks.length} tasks; ${taskIndex} is not one of them.`,
+            });
+        }
+
+        const ticked = new Set((week.completed_tasks || []).map(Number));
+        if (done) ticked.add(taskIndex);
+        else ticked.delete(taskIndex);
+        week.completed_tasks = [...ticked].sort((a, b) => a - b);
+
+        // The week's own status follows its tasks rather than being set by
+        // hand, so the two can never disagree.
+        const total = week.tasks.length;
+        const complete = week.completed_tasks.length;
+        week.status = complete === 0 ? "pending" : complete >= total ? "completed" : "in_progress";
+
+        // Ticking the last task of the last week finishes the plan, and
+        // unticking one puts it back. Derived here rather than left to a
+        // screen, so every caller sees the same state.
+        const completion = completionUpdateFor(roadmap);
+        if (completion) Object.assign(roadmap, completion);
+
+        await roadmap.save();
+
+        res.status(200).json({
+            success: true,
+            data: {
+                week_number: weekNumber,
+                completed_tasks: week.completed_tasks,
+                status: week.status,
+                total_tasks: total,
+            },
+        });
+    } catch (err) {
+        console.error("updateTaskStatus error:", err);
+        res.status(500).json({ success: false, message: "Server error.", error: err.message });
+    }
+};
+
+/**
+ * POST /api/roadmap/analyse-job — read a job posting against the curriculum.
+ *
+ * The ATS check already parses a posting, but only to score a CV against it.
+ * This asks the question a learner actually arrives with: can I do this job,
+ * and if not, how far off am I.
+ *
+ * What counts as "already have" comes from two places — the skills on the
+ * profile, and skills assessed at or above the pass mark. A skill someone
+ * scored 40% on is not one they have, and scheduling it is the point.
+ */
+export const analyseJobPosting = async (req, res) => {
+    try {
+        const jobDescription = (req.body?.jobDescription || "").trim();
+        if (jobDescription.length < 20) {
+            return res.status(400).json({
+                success: false,
+                message: "Paste the job posting — a line or two is not enough to read.",
+            });
+        }
+
+        const user = await User.findById(req.user._id).select(
+            "current_skills target_role hours_per_week experience_level"
+        );
+
+        // Assessed skills count only if they were actually passed.
+        const gap = await SkillGap.findOne({
+            user_id: req.user._id,
+            target_role: user?.target_role,
+        }).lean();
+        const passed = (gap?.skill_gaps || [])
+            .filter((g) => Number(g.current_score) >= 70)
+            .map((g) => g.skill);
+
+        const known = [
+            ...normalizeCurrentSkillsForAI(user?.current_skills).map((s) => s.skill || s),
+            ...passed,
+        ].filter(Boolean);
+
+        const { data } = await axios.post(
+            `${AI_SERVICE_URL}/api/jobs/analyse`,
+            {
+                job_description: jobDescription,
+                known_skills: known,
+                hours_per_week: user?.hours_per_week || 10,
+                experience_level: user?.experience_level || "beginner",
+                role_hint: req.body?.roleHint || null,
+            },
+            { timeout: AI_TIMEOUT_MS }
+        );
+
+        // Attach the quiz topic that covers each missing skill, the same way
+        // the roadmap does, so "assess these skills" can open the quiz on one
+        // of them instead of leaving the learner to find it in a list of 29.
+        // Skills with no topic in the catalogue simply carry none.
+        // Kept in the order the skills are missing rather than whatever order
+        // the lookup returns, so the first one offered is the first gap named.
+        const missingTopicNames = [
+            ...new Set((data?.missing || []).map((s) => topicForSkill(s)).filter(Boolean)),
+        ];
+        const idByName = new Map(
+            missingTopicNames.length
+                ? (await Topic.find({ name: { $in: missingTopicNames }, isActive: true })
+                      .select("name")
+                      .lean()).map((t) => [t.name, String(t._id)])
+                : []
+        );
+        const missingTopics = missingTopicNames
+            .filter((name) => idByName.has(name))
+            .map((name) => ({ topicId: idByName.get(name), topicName: name }));
+
+        return res.status(200).json({
+            success: true,
+            data: { ...data, missing_topics: missingTopics },
+        });
+    } catch (err) {
+        if (err.response || err.request) {
+            console.error("Job analysis service error:", err.message);
+            return res.status(503).json({
+                success: false,
+                message: "The analysis service is not reachable. Try again in a moment.",
+            });
+        }
+        console.error("analyseJobPosting error:", err);
+        return res.status(500).json({ success: false, message: "Server error.", error: err.message });
+    }
+};
+
+/**
+ * POST /api/roadmap/adapt — rebuild the active plan around newer results,
+ * keeping the progress made on it.
+ *
+ * The stale notice used to offer only "Regenerate", which writes a new
+ * document, supersedes the old one, and leaves every completed skill and every
+ * ticked task behind in history. So the offer to rebuild around a fresh
+ * assessment was really an offer to start again, and for anyone a few weeks in
+ * the sensible answer was to ignore it.
+ *
+ * This rebuilds the same document. Skills carry by name and ticks carry by
+ * what the task says, so the plan can reorder and renumber freely without
+ * losing the work — see utils/mergeRoadmapProgress.js for why neither can be
+ * carried by position.
+ *
+ * Regenerate is still there for a genuine restart. This is the other case.
+ */
+export const adaptRoadmap = async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const [user, settings] = await Promise.all([User.findById(userId), Settings.current()]);
+        const roadmapProfile = resolveRoadmapProfile(user || {}, settings);
+
+        const roadmap = await Roadmap.findOne({
+            user_id: userId,
+            status: { $in: LIVE_STATUSES },
+            ...(roadmapProfile.targetRole ? { target_role: roadmapProfile.targetRole } : {}),
+        }).sort({ createdAt: -1 });
+
+        if (!roadmap) {
+            return res.status(404).json({
+                success: false,
+                message: "No active roadmap to adapt. Generate one first.",
+            });
+        }
+
+        const skillGap = await SkillGap.findOne({
+            user_id: userId,
+            target_role: roadmapProfile.targetRole,
+        }).sort({ createdAt: -1 });
+
+        let aiResult;
+        try {
+            const response = await axios.post(
+                `${AI_SERVICE_URL}/api/roadmap/generate`,
+                {
+                    user_id: userId.toString(),
+                    target_role: roadmapProfile.targetRole,
+                    experience_level: roadmapProfile.experienceLevel,
+                    hours_per_week: roadmapProfile.hoursPerWeek,
+                    learning_style: roadmapProfile.learningStyle,
+                    skill_gaps: skillGap?.skill_gaps || [],
+                    skill_scores: Object.fromEntries(
+                        (skillGap?.skill_gaps || []).map((gap) => [gap.skill, gap.current_score])
+                    ),
+                    current_skills: normalizeCurrentSkillsForAI(user.current_skills),
+                    max_modules: settings.maxModules,
+                },
+                { timeout: AI_TIMEOUT_MS }
+            );
+            aiResult = response.data;
+        } catch (aiError) {
+            console.error("AI service error during adapt:", aiError.message);
+            // The existing plan is untouched, so saying so is the whole
+            // recovery — nothing has been half-rewritten.
+            return res.status(503).json({
+                success: false,
+                message: "Could not rebuild the plan just now. Your current one is unchanged.",
+            });
+        }
+
+        const previous = {
+            skills: roadmap.skills.map((s) => ({ skill: s.skill, status: s.status })),
+            weekly_plans: roadmap.weekly_plans.map((w) => ({
+                week_number: w.week_number,
+                skills: [...(w.skills || [])],
+                tasks: [...(w.tasks || [])],
+                completed_tasks: [...(w.completed_tasks || [])],
+            })),
+        };
+
+        const next = {
+            skills: aiResult.skills || [],
+            weekly_plans: aiResult.weekly_plans || [],
+        };
+        const carried = mergeRoadmapProgress(previous, next);
+
+        roadmap.skills = next.skills;
+        roadmap.weekly_plans = next.weekly_plans;
+        roadmap.total_duration_weeks = aiResult.total_duration_weeks;
+        roadmap.metadata = { ...(roadmap.metadata || {}), last_adapted_at: new Date() };
+
+        // Rebuilding usually adds unfinished weeks, so a plan that was
+        // complete may not be any more.
+        const adaptedCompletion = completionUpdateFor(roadmap);
+        if (adaptedCompletion) Object.assign(roadmap, adaptedCompletion);
+
+        await roadmap.save();
+
+        return res.status(200).json({
+            success: true,
+            message: "Plan rebuilt around your latest results.",
+            data: {
+                roadmap_id: roadmap.roadmap_id,
+                total_duration_weeks: roadmap.total_duration_weeks,
+                skills_carried: carried.skillsCarried,
+                ticks_carried: carried.ticksCarried,
+                ticks_dropped: carried.ticksDropped,
+            },
+        });
+    } catch (err) {
+        console.error("adaptRoadmap error:", err);
+        return res.status(500).json({ success: false, message: "Server error.", error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────
+// DELETE /api/roadmap/:roadmap_id
+// ─────────────────────────────────────────────
+/**
+ * Throws a saved plan away for good.
+ *
+ * Regenerating keeps the old plan every time, so history fills with
+ * near-identical entries and clearing it out is a fair thing to want. This is
+ * a real delete rather than a hidden flag: a list that still holds everything
+ * it claims to have removed is the same clutter with a filter over it, and
+ * the learner asked for the row to be gone.
+ *
+ * The plan being worked from is refused. It is reachable from every screen,
+ * and deleting it would empty the roadmap page with no way back — generating
+ * a new one supersedes it first, which is the ordinary path.
+ */
+export const deleteRoadmap = async (req, res) => {
+    try {
+        const [user, roadmap] = await Promise.all([
+            User.findById(req.user._id).select("target_role").lean(),
+            Roadmap.findOne({
+                roadmap_id: req.params.roadmap_id,
+                // Scoped to the owner, so a guessed id reads as missing
+                // rather than as someone else's plan.
+                user_id: req.user._id,
+            }),
+        ]);
+
+        const verdict = canDeleteRoadmap(roadmap, user?.target_role);
+        if (!verdict.allowed) {
+            return res
+                .status(roadmap ? 409 : 404)
+                .json({ success: false, message: verdict.reason });
+        }
+
+        // Reported back so the confirmation can say what was actually lost,
+        // rather than the caller having to remember what it asked to delete.
+        const progress = progressHeldBy(roadmap);
+        await Roadmap.deleteOne({ _id: roadmap._id });
+
+        return res.status(200).json({
+            success: true,
+            message: "Roadmap deleted.",
+            data: {
+                roadmap_id: roadmap.roadmap_id,
+                target_role: roadmap.target_role,
+                progress,
+            },
+        });
+    } catch (err) {
+        console.error("deleteRoadmap error:", err);
+        return res
+            .status(500)
+            .json({ success: false, message: "Server error.", error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────
+// DELETE /api/roadmap/superseded
+// ─────────────────────────────────────────────
+/**
+ * Clears out every plan that a newer one replaced.
+ *
+ * Ten near-identical rows for the same track is the state this screen tends
+ * towards, and removing them one at a time is the tedium the sweep exists to
+ * avoid.
+ *
+ * Only 'regenerated' plans go. A finished plan is an achievement rather than
+ * clutter, and an active plan for a track the learner stepped away from is
+ * waiting for them if they return — neither belongs in an action whose appeal
+ * is not having to read the list first.
+ */
+export const deleteSupersededRoadmaps = async (req, res) => {
+    try {
+        const roadmaps = await Roadmap.find({
+            user_id: req.user._id,
+            status: "regenerated",
+        })
+            .select("roadmap_id target_role status skills weekly_plans")
+            .lean();
+
+        if (!roadmaps.length) {
+            return res.status(200).json({
+                success: true,
+                message: "Nothing to clear — no plan here has been superseded.",
+                data: { deleted: 0, progress: totalProgressHeldBy([]) },
+            });
+        }
+
+        // Counted before the delete, so the confirmation can report what went
+        // rather than what was asked for.
+        const progress = totalProgressHeldBy(roadmaps);
+        const { deletedCount } = await Roadmap.deleteMany({
+            user_id: req.user._id,
+            status: "regenerated",
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: `Deleted ${deletedCount} superseded ${deletedCount === 1 ? "plan" : "plans"}.`,
+            data: {
+                deleted: deletedCount,
+                progress,
+                roles: [...new Set(roadmaps.map((r) => r.target_role))],
+            },
+        });
+    } catch (err) {
+        console.error("deleteSupersededRoadmaps error:", err);
+        return res
+            .status(500)
+            .json({ success: false, message: "Server error.", error: err.message });
     }
 };

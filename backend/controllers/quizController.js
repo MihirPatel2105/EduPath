@@ -1,9 +1,55 @@
+import mongoose from 'mongoose';
 import QuizSession from '../models/QuizSession.js';
 import QuizResult from '../models/QuizResult.js';
 import Topic from '../models/Topic.js';
+import SkillGap from '../models/SkillGap.js';
+import User from '../models/userModel.js';
 import huggingFaceService from '../services/huggingFaceService.js';
 import aiService from '../services/aiService.js';
+import Settings from '../models/Settings.js';
+import { skillsAssessedBy } from '../utils/skillTopicMap.js';
+import { reviewQueue } from '../utils/reviewSchedule.js';
+import { topicsForRole } from '../utils/roleTopicMap.js';
+import { careerPathFor } from '../utils/careerRoles.js';
+import Roadmap from '../models/Roadmap.js';
 
+
+
+/**
+ * Roadmap skills this result could settle, if the learner agrees.
+ *
+ * Marking a skill done has always been self-reported, and a pass on the quiz
+ * that covers it is the best evidence the product has — but it is offered
+ * rather than applied, because the learner is the one who knows whether they
+ * can actually do it. Only skills still outstanding, and only on a pass:
+ * failing a quiz is not an invitation to tick anything.
+ *
+ * Shared by the submit response and the result page, so an offer cannot
+ * appear in one and not the other.
+ */
+const outstandingRoadmapSkills = async (userId, topicName, percentage) => {
+  const covered = skillsAssessedBy(topicName);
+  if (!(percentage >= 70) || covered.length === 0) return [];
+
+  try {
+    const plan = await Roadmap.findOne({
+      user_id: userId,
+      status: { $in: ['active', 'completed'] },
+    })
+      .sort({ createdAt: -1 })
+      .select('skills')
+      .lean();
+
+    return (plan?.skills || [])
+      .filter((s) => covered.includes(s.skill) && s.status !== 'completed')
+      .map((s) => s.skill);
+  } catch (error) {
+    // No plan is the ordinary case for someone who has not generated one,
+    // and must never fail the thing it is decorating.
+    console.error('Could not read roadmap skills:', error.message);
+    return [];
+  }
+};
 
 /**
  * Get quiz session details (for resuming or viewing)
@@ -94,10 +140,17 @@ export const getQuizResult = async (req, res) => {
       });
     }
 
+    const roadmapSkills = await outstandingRoadmapSkills(
+      userId,
+      result.topicId?.name,
+      result.percentage
+    );
+
     res.json({
       success: true,
       data: {
         resultId: result._id,
+        roadmapSkills,
         topic: result.topicId,
         difficulty: result.difficulty,
         experienceLevel: result.experienceLevel,
@@ -107,7 +160,7 @@ export const getQuizResult = async (req, res) => {
         correctAnswers: result.correctAnswers,
         totalQuestions: result.totalQuestions,
         timeTaken: result.timeTaken,
-        performance: getPerformanceLevel(result.score),
+        performance: getPerformanceLevel(result.percentage),
         detailedAnswers: result.answers,
         completedAt: result.createdAt,
       },
@@ -223,19 +276,33 @@ export const retryQuiz = async (req, res) => {
     console.log(`📚 Topic: ${topic.name}`);
     console.log(`📊 Difficulty: ${originalResult.difficulty}`);
 
+    const settings = await Settings.current();
+
+    if (settings.enableAI === false) {
+      return res.status(503).json({
+        error: 'Quiz generation is turned off right now. Please try again later.'
+      });
+    }
+
     // Generate new questions using same parameters
     const questions = await huggingFaceService.generateQuizQuestions({
       topic: topic.name,
       difficulty: originalResult.difficulty,
       experienceLevel: originalResult.experienceLevel,
-      questionCount: originalResult.totalQuestions,
+      questionCount: Math.min(originalResult.totalQuestions, settings.maxQuestions),
+      basePrompt: settings.basePrompt,
     });
 
-    // Calculate expiration time (30 minutes per question + 5 min buffer)
-    const totalTimeMinutes = (questions.length * 0.5) + 5;
+    // Expiry follows the configured maximum duration rather than a constant.
+    const totalTimeMinutes = Math.min((questions.length * 0.5) + 5, settings.maxDuration);
     const expiresAt = new Date(Date.now() + totalTimeMinutes * 60 * 1000);
 
     // Create new quiz session
+    // Anything the learner left running has run out of time by now — say so
+    // before adding another, or the record keeps several quizzes "ongoing"
+    // at once and only one of them is.
+    await QuizSession.expireOldSessions(userId);
+
     const newSession = await QuizSession.create({
       userId,
       topicId: originalResult.topicId,
@@ -300,10 +367,18 @@ export const getAllTopics = async (req, res) => {
   try {
     const topics = await Topic.getAllActiveWithStats();
 
+    // Marked, not filtered. The user's track decides what is worth assessing
+    // first, but everything stays selectable — someone should be able to test
+    // a skill outside their role without changing their profile to do it.
+    const recommended = new Set(topicsForRole(req.user?.target_role));
+
     res.status(200).json({
       success: true,
       count: topics.length,
-      data: topics,
+      data: topics.map((topic) => ({
+        ...topic,
+        recommended: recommended.has(topic.name),
+      })),
     });
   } catch (error) {
     console.error('Error fetching topics:', error);
@@ -353,6 +428,19 @@ export const startQuiz = async (req, res) => {
       return res.status(404).json({ error: 'Topic not found' });
     }
 
+    // Admin settings are read here rather than only displayed on the settings
+    // screen — without this the limits are a form, not a setting.
+    const settings = await Settings.current();
+
+    if (settings.enableAI === false) {
+      return res.status(503).json({
+        error: 'Quiz generation is turned off right now. Please try again later.'
+      });
+    }
+
+    const requested = parseInt(questionCount, 10) || 10;
+    const cappedCount = Math.min(requested, settings.maxQuestions);
+
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🎯 Starting AI Quiz Generation`);
     console.log(`${'='.repeat(60)}`);
@@ -360,7 +448,7 @@ export const startQuiz = async (req, res) => {
     console.log(`📚 Topic: ${topic.name}`);
     console.log(`📊 Difficulty: ${difficulty}`);
     console.log(`🎓 Experience: ${experienceLevel}`);
-    console.log(`🔢 Questions: ${questionCount}`);
+    console.log(`🔢 Questions: ${cappedCount}${cappedCount < requested ? ` (capped from ${requested})` : ''}`);
     console.log(`${'='.repeat(60)}\n`);
 
     // Generate questions using Hugging Face AI
@@ -368,14 +456,20 @@ export const startQuiz = async (req, res) => {
       topic: topic.name,
       difficulty,
       experienceLevel,
-      questionCount: parseInt(questionCount),
+      questionCount: cappedCount,
+      basePrompt: settings.basePrompt,
     });
 
-    // Calculate expiration time (30 minutes per question + 5 min buffer)
-    const totalTimeMinutes = (questions.length * 0.5) + 5;
+    // Expiry follows the configured maximum duration rather than a constant.
+    const totalTimeMinutes = Math.min((questions.length * 0.5) + 5, settings.maxDuration);
     const expiresAt = new Date(Date.now() + totalTimeMinutes * 60 * 1000);
 
     // Create quiz session with AI-generated questions
+    // Anything the learner left running has run out of time by now — say so
+    // before adding another, or the record keeps several quizzes "ongoing"
+    // at once and only one of them is.
+    await QuizSession.expireOldSessions(userId);
+
     const quizSession = await QuizSession.create({
       userId,
       topicId,
@@ -521,12 +615,40 @@ export const submitQuiz = async (req, res) => {
     console.log(`📊 Score: ${percentage.toFixed(2)}%`);
     console.log(`✔️  Correct: ${correctAnswers}/${session.totalQuestions}\n`);
 
+    // Feed this result into the user's running skill-gap profile, which is
+    // what roadmap generation reads to personalize which skills it
+    // schedules. Only topics with a known mapping to the AI service's
+    // canonical skill names are written — see skillTopicMap.js.
+    //
+    // Only the skills this topic actually assesses. The skills it merely
+    // touches are deliberately not recorded: a passing score removes a skill
+    // from the roadmap, so writing them let one quiz clear three skills the
+    // learner was never asked about.
+    const canonicalSkills = skillsAssessedBy(session.topicId.name);
+    if (canonicalSkills.length > 0) {
+      try {
+        await syncSkillGap(userId, canonicalSkills, percentage);
+      } catch (error) {
+        console.error('Failed to update skill gap profile:', error.message);
+      }
+    }
+
     // Calculate difficulty breakdown for AI assessment
     const difficultyBreakdown = calculateDifficultyBreakdown(detailedResults);
 
-    // Get AI-powered skill assessment (async, non-blocking)
+    // AI-powered skill assessment. This is awaited, so it does hold up the
+    // response — the comment here used to say "async, non-blocking", which it
+    // has never been. It is bounded and it falls back, so the cost of a slow
+    // AI service is a slower results page rather than a lost result; see the
+    // timeout note in services/aiService.js.
     let aiAnalysis = null;
     try {
+      // The track this result belongs to. Read here rather than passed in,
+      // because the quiz session records the topic and difficulty chosen but
+      // never the role — and the role is what decides whether "next steps"
+      // point at React or at packet capture.
+      const learner = await User.findById(userId).select('target_role').lean();
+
       const assessmentData = {
         userId: userId.toString(),
         skillName: session.topicId.name,
@@ -541,7 +663,7 @@ export const submitQuiz = async (req, res) => {
           weight: 1, // Base weight
           difficulty: session.difficultySelected.charAt(0).toUpperCase() + session.difficultySelected.slice(1)
         })),
-        careerPath: 'MERN', // Can be fetched from user profile
+        careerPath: careerPathFor(learner?.target_role),
         userLevel: session.experienceLevelSelected.charAt(0).toUpperCase() + session.experienceLevelSelected.slice(1)
       };
 
@@ -565,8 +687,15 @@ export const submitQuiz = async (req, res) => {
     else if (percentage >= 70) performance = 'satisfactory';
 
     // Build response with AI analysis
+    const roadmapSkills = await outstandingRoadmapSkills(
+      userId,
+      session.topicId.name,
+      percentage
+    );
+
     const responseData = {
       resultId: quizResult._id,
+      roadmapSkills,
       score: correctAnswers,
       percentage: Math.round(percentage),
       correctAnswers,
@@ -605,6 +734,67 @@ export const submitQuiz = async (req, res) => {
       message: error.message,
     });
   }
+};
+
+/** Coarser bands than pass/fail — this drives how urgently the roadmap
+ *  generator schedules the skill, not just whether the quiz was passed. */
+const gapSeverity = (score) => {
+  if (score < 40) return 'critical';
+  if (score < 60) return 'high';
+  if (score < 75) return 'medium';
+  return 'low';
+};
+
+// Matches the pass/fail threshold QuizResult already uses.
+const REQUIRED_SCORE = 70;
+
+/**
+ * Upserts the user's running SkillGap document for their current target role:
+ * sets/replaces the score and gap entry for each canonical skill this topic
+ * covers, then recomputes strength_score from everything on record.
+ *
+ * Scoped per role because the skill names differ between curricula — mixing
+ * a MERN score into an AI/ML document would leave entries the roadmap
+ * generator can never match.
+ */
+const syncSkillGap = async (userId, canonicalSkills, score) => {
+  const roundedScore = Math.round(score);
+  const severity = gapSeverity(roundedScore);
+
+  const user = await User.findById(userId).select('target_role');
+  const targetRole = user?.target_role || 'Unspecified';
+
+  let skillGap = await SkillGap.findOne({ user_id: userId, target_role: targetRole })
+    .sort({ createdAt: -1 });
+  if (!skillGap) {
+    skillGap = new SkillGap({
+      user_id: userId,
+      target_role: targetRole,
+      skill_gaps: [],
+    });
+  }
+
+  for (const skill of canonicalSkills) {
+    const entry = {
+      skill,
+      gap_severity: severity,
+      current_score: roundedScore,
+      required_score: REQUIRED_SCORE,
+    };
+    const existingIndex = skillGap.skill_gaps.findIndex((g) => g.skill === skill);
+    if (existingIndex >= 0) {
+      skillGap.skill_gaps[existingIndex] = entry;
+    } else {
+      skillGap.skill_gaps.push(entry);
+    }
+  }
+
+  const scores = skillGap.skill_gaps.map((g) => g.current_score ?? 0);
+  skillGap.strength_score = scores.length
+    ? Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length)
+    : 0;
+
+  await skillGap.save();
 };
 
 /**
@@ -711,7 +901,10 @@ export const getQuizStats = async (req, res) => {
         $group: {
           _id: null,
           totalQuizzes: { $sum: 1 },
-          averageScore: { $avg: '$score' },
+          // averageScore is rendered as a percentage ("N/100") — score is
+          // raw marks out of totalMarks, not 0-100, so averaging it directly
+          // showed e.g. 2/100 for a quiz whose real result was 40/100.
+          averageScore: { $avg: '$percentage' },
           totalQuestions: { $sum: '$totalQuestions' },
           totalCorrect: { $sum: '$correctAnswers' },
         },
@@ -720,12 +913,21 @@ export const getQuizStats = async (req, res) => {
 
     const topicPerformance = await QuizResult.aggregate([
       { $match: { userId } },
+      // Oldest first so $first/$last are the earliest and most recent attempt.
+      // Every attempt is already on record here, so improvement is derived
+      // rather than stored — a second copy of these scores could disagree
+      // with the results they came from.
+      { $sort: { createdAt: 1 } },
       {
         $group: {
           _id: '$topicId',
           quizCount: { $sum: 1 },
-          averageScore: { $avg: '$score' },
-          bestScore: { $max: '$score' },
+          averageScore: { $avg: '$percentage' },
+          bestScore: { $max: '$percentage' },
+          firstScore: { $first: '$percentage' },
+          latestScore: { $last: '$percentage' },
+          firstAt: { $first: '$createdAt' },
+          latestAt: { $last: '$createdAt' },
         },
       },
       {
@@ -744,8 +946,14 @@ export const getQuizStats = async (req, res) => {
           quizCount: 1,
           averageScore: { $round: ['$averageScore', 2] },
           bestScore: { $round: ['$bestScore', 2] },
+          firstScore: { $round: ['$firstScore', 0] },
+          latestScore: { $round: ['$latestScore', 0] },
+          firstAt: 1,
+          latestAt: 1,
         },
       },
+      // Biggest movement first, so what changed leads.
+      { $sort: { quizCount: -1, latestAt: -1 } },
     ]);
 
     res.json({
@@ -764,5 +972,61 @@ export const getQuizStats = async (req, res) => {
   } catch (error) {
     console.error('❌ Error fetching quiz stats:', error);
     res.status(500).json({ error: 'Failed to fetch quiz statistics' });
+  }
+};
+
+/**
+ * GET /api/quiz/review-queue — topics worth going back to.
+ *
+ * Every attempt has always been stored and nothing ever read it back. The
+ * history screen lists attempts; nothing said "you scored 40% on this five
+ * weeks ago and have not touched it since", which is the one thing that record
+ * is good for.
+ *
+ * Built from the same aggregation the stats screen uses, so a topic's latest
+ * score cannot differ between the two.
+ */
+export const getReviewQueue = async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.user._id);
+
+    const topicPerformance = await QuizResult.aggregate([
+      { $match: { userId } },
+      { $sort: { createdAt: 1 } },
+      {
+        $group: {
+          _id: '$topicId',
+          latestScore: { $last: '$percentage' },
+          latestAt: { $last: '$createdAt' },
+          attempts: { $sum: 1 },
+        },
+      },
+      { $lookup: { from: 'topics', localField: '_id', foreignField: '_id', as: 'topic' } },
+      { $unwind: '$topic' },
+      {
+        $project: {
+          topicId: '$_id',
+          topicName: '$topic.name',
+          latestScore: { $round: ['$latestScore', 0] },
+          latestAt: 1,
+          attempts: 1,
+        },
+      },
+    ]);
+
+    const due = reviewQueue(topicPerformance);
+
+    res.json({
+      success: true,
+      data: {
+        due,
+        // So the screen can say "nothing due" rather than "nothing here",
+        // which read as though the feature was broken on a fresh account.
+        tracked: topicPerformance.length,
+      },
+    });
+  } catch (error) {
+    console.error('getReviewQueue error:', error);
+    res.status(500).json({ success: false, message: 'Server error.', error: error.message });
   }
 };

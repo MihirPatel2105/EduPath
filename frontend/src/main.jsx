@@ -1,35 +1,24 @@
-import { StrictMode, useEffect } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, useNavigate, useLocation } from 'react-router-dom'
+import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
-import { QuizProvider } from './Pages/context/QuizContext'
-
-// Component to fix double slash URLs
-const URLNormalizer = ({ children }) => {
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  useEffect(() => {
-    // Fix double slash at the start of pathname
-    if (location.pathname.startsWith('//')) {
-      const normalizedPath = location.pathname.substring(1);
-      navigate(normalizedPath + location.search + location.hash, { replace: true });
-    }
-  }, [location, navigate]);
-
-  return children;
-};
+import URLNormalizer from './component/URLNormalizer.jsx'
+import { QuizProvider } from './Pages/Context/QuizContext'
+import { AuthProvider } from './Pages/Context/AuthContext'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
       <URLNormalizer>
-        <QuizProvider>
-          <App />
-        </QuizProvider>
+        {/* Outside QuizProvider: who is signed in decides whether there is a
+            quiz to hold at all, and the route guards read it. */}
+        <AuthProvider>
+          <QuizProvider>
+            <App />
+          </QuizProvider>
+        </AuthProvider>
       </URLNormalizer>
     </BrowserRouter>
-
   </StrictMode>,
 )

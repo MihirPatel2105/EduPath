@@ -1,12 +1,30 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useQuiz } from "../../context/QuizContext";
+import { useEffect, useState, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useQuiz } from "../../Context/useQuiz";
 import { fetchQuizTopics, startQuiz } from "../../Services/assessmentService";
 import { useQuizLogic } from "./hooks/useQuizLogic";
 import QuizLayout from "./components/QuizLayout";
+import {
+  Card, CardHeader, Button, Field, FieldGroup, InlineMessage, Loading, Empty, MicroLabel, type,
+} from "../../../design";
+
+// Native selects have no spec entry; these borrow the Field input treatment so
+// they sit level with the text inputs beside them.
+const SELECT_STYLE = {
+  width: '100%',
+  padding: '13px 14px',
+  fontSize: 15,
+  fontFamily: 'var(--font-sans)',
+  color: 'var(--color-ink)',
+  background: '#fff',
+  border: '1px solid var(--color-line-input)',
+  borderRadius: 0,
+  outline: 'none',
+};
 
 const QuizPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Check authentication on component mount
   useEffect(() => {
@@ -21,7 +39,6 @@ const QuizPage = () => {
   const [stage, setStage] = useState('configure');
 
   const [quizStarted, setQuizStarted] = useState(false);
-  const [showStartModal, setShowStartModal] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -29,6 +46,7 @@ const QuizPage = () => {
   // Topics for dropdown
   const [topics, setTopics] = useState([]);
   const [loadingTopics, setLoadingTopics] = useState(true);
+  const [topicQuery, setTopicQuery] = useState('');
 
   // Quiz configuration
   const [quizConfig, setQuizConfig] = useState({
@@ -39,9 +57,6 @@ const QuizPage = () => {
     experienceLevel: 'beginner',
     questionCount: 10
   });
-
-  // Terms agreement
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const {
     assessment: contextAssessment,
@@ -58,23 +73,62 @@ const QuizPage = () => {
     setAssessment,
   } = useQuiz() || {};
 
-  // Load topics on mount
-  useEffect(() => {
-    loadTopics();
-  }, []);
-
-  const loadTopics = async () => {
+  const loadTopics = useCallback(async () => {
     try {
       setLoadingTopics(true);
       const response = await fetchQuizTopics();
-      setTopics(response.data?.data || []);
+      const list = response.data?.data || [];
+      setTopics(list);
+
+      // Arriving from a roadmap skill: preselect the topic that covers it so
+      // the learner is not asked to find it again in a list of 54.
+      const wanted = location.state?.topicId;
+      if (wanted) {
+        const match = list.find((t) => String(t._id) === String(wanted));
+        if (match) {
+          setQuizConfig((prev) => ({
+            ...prev,
+            topicId: match._id,
+            topicName: match.name,
+            topicIcon: match.icon,
+          }));
+        }
+      }
     } catch (err) {
       console.error('Failed to load topics:', err);
       setError('Failed to load topics');
     } finally {
       setLoadingTopics(false);
     }
+  }, [location.state]);
+
+  // Load topics on mount, and again if the learner arrives here from a
+  // different roadmap skill — the preselection above reads location.state, so
+  // a function captured on first render would preselect the topic from the
+  // journey before this one.
+  useEffect(() => {
+    loadTopics();
+  }, [loadTopics]);
+
+  // The catalogue went from 29 topics to 54 when every curriculum skill got
+  // one of its own, and scanning that many options in a dropdown is not
+  // reading, it is hunting. Narrowing happens above the list rather than
+  // replacing it: the grouping by role is the useful default and a search
+  // that discarded it would be a worse starting point.
+  const topicMatches = (topic) => {
+    const term = topicQuery.trim().toLowerCase();
+    if (!term) return true;
+    // The current choice always stays in the list. Filtering it out leaves a
+    // select whose value matches no option, which reads as having lost it.
+    if (topic._id === quizConfig.topicId) return true;
+    return String(topic.name || '').toLowerCase().includes(term);
   };
+
+  // The API marks which topics suit the user's target role; the split is kept
+  // here so the select can group them without reordering the source list.
+  const recommendedTopics = topics.filter((t) => t.recommended).filter(topicMatches);
+  const otherTopics = topics.filter((t) => !t.recommended).filter(topicMatches);
+  const matchCount = recommendedTopics.length + otherTopics.length;
 
   const handleTopicChange = (e) => {
     const selectedTopic = topics.find(t => t._id === e.target.value);
@@ -90,18 +144,14 @@ const QuizPage = () => {
 
   const handleConfigureNext = () => {
     if (!quizConfig.topicId) {
-      alert('Please select a topic');
+      setError('Please choose a topic first');
       return;
     }
+    setError(null);
     setStage('instructions');
   };
 
   const handleStartQuizFromInstructions = async () => {
-    if (!agreedToTerms) {
-      alert('Please accept the terms and conditions');
-      return;
-    }
-
     try {
       setLoading(true);
       setError(null);
@@ -152,9 +202,6 @@ const QuizPage = () => {
     selectedAnswer,
     handleMarkForReview,
     isMarked,
-    handleStartQuizClick,
-    handleConfirmStart,
-    handleCancelStart,
     handleSubmitQuizClick,
     handleConfirmSubmit,
     handleTimeUp,
@@ -170,19 +217,25 @@ const QuizPage = () => {
     markedForReview,
     setMarkedForReview,
     quizStarted,
-    setQuizStarted,
-    setShowStartModal,
     setShowSubmitModal,
     navigate,
   });
 
+  // Records that the current question has been seen.
+  //
+  // The update is functional so this reads the list React holds rather than
+  // the one captured when the effect was created — the previous version
+  // closed over `visitedQuestions` while leaving it out of the dependencies,
+  // so a question visited after any other write to the list could be appended
+  // to a stale copy and silently drop the entries in between.
   useEffect(() => {
-    if (stage === 'quiz' && assessment && assessment.questions && assessment.questions[currentQuestionIndex] && setVisitedQuestions) {
-      if (visitedQuestions && !visitedQuestions.includes(currentQuestionIndex)) {
-        setVisitedQuestions([...visitedQuestions, currentQuestionIndex]);
-      }
-    }
-  }, [currentQuestionIndex, assessment, stage]);
+    if (stage !== 'quiz' || !setVisitedQuestions) return;
+    if (!assessment?.questions?.[currentQuestionIndex]) return;
+
+    setVisitedQuestions((prev = []) =>
+      prev.includes(currentQuestionIndex) ? prev : [...prev, currentQuestionIndex]
+    );
+  }, [currentQuestionIndex, assessment, stage, setVisitedQuestions]);
 
   useEffect(() => {
     if (!quizStarted || stage !== 'quiz') return;
@@ -199,111 +252,115 @@ const QuizPage = () => {
   // Stage 1: Configuration Form
   if (stage === 'configure') {
     return (
-      <div className="min-h-screen bg-black relative flex items-center justify-center py-4 px-4">
-        <div className="max-w-2xl w-full mx-auto relative z-10">
-          <div className="backdrop-blur-xl bg-slate-900/60 rounded-2xl shadow-2xl border border-white/10 p-6">
-            <div className="text-center mb-5">
-              <h1 className="text-3xl font-bold text-white mb-1">Configure Your Quiz</h1>
-              <p className="text-slate-300 text-sm">Customize your assessment experience</p>
+      <div style={{ background: 'var(--color-paper)', minHeight: '100vh', padding: '48px 32px' }}>
+        <div style={{ maxWidth: 760, margin: '0 auto' }}>
+          <Card>
+            <CardHeader label="Configure assessment" />
+            <div style={{ padding: '32px 34px' }}>
+              <h1 style={{ ...type.question, margin: 0, color: 'var(--color-ink)' }}>
+                Set up your assessment
+              </h1>
+
+              {loadingTopics ? (
+                <Loading />
+              ) : (
+                <FieldGroup style={{ marginTop: 26 }}>
+                  {/* Grouped, not filtered: the topics that matter for your
+                      track come first, but every topic stays selectable. */}
+                  <Field
+                    label="Topic"
+                    help={
+                      recommendedTopics.length > 0
+                        ? `Suggested for ${sessionStorage.getItem('targetRole')}. You can pick any topic.`
+                        : undefined
+                    }
+                  >
+                    {/* Only once the list is long enough to be worth
+                        narrowing. On a short list a search box is one more
+                        thing to read past. */}
+                    {topics.length > 15 && (
+                      <input
+                        type="search"
+                        value={topicQuery}
+                        onChange={(e) => setTopicQuery(e.target.value)}
+                        placeholder={`Filter ${topics.length} topics`}
+                        style={{ ...SELECT_STYLE, marginBottom: 8, padding: '11px 14px', fontSize: 14 }}
+                      />
+                    )}
+
+                    <select
+                      value={quizConfig.topicId}
+                      onChange={handleTopicChange}
+                      style={SELECT_STYLE}
+                    >
+                      <option value="">Choose a topic…</option>
+                      {recommendedTopics.length > 0 && (
+                        <optgroup label="For your role">
+                          {recommendedTopics.map((topic) => (
+                            <option key={topic._id} value={topic._id}>{topic.name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label={recommendedTopics.length > 0 ? 'All other topics' : 'All topics'}>
+                        {otherTopics.map((topic) => (
+                          <option key={topic._id} value={topic._id}>{topic.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    {topicQuery.trim() && matchCount === 0 && (
+                      <div style={{ fontSize: 13.5, color: 'var(--color-text-3)', marginTop: 6 }}>
+                        {`No topic matches "${topicQuery.trim()}".`}
+                      </div>
+                    )}
+                  </Field>
+
+                  <Field label="Difficulty">
+                    <select
+                      value={quizConfig.difficulty}
+                      onChange={(e) => setQuizConfig({ ...quizConfig, difficulty: e.target.value })}
+                      style={SELECT_STYLE}
+                    >
+                      <option value="beginner">Beginner</option>
+                      <option value="intermediate">Intermediate</option>
+                      <option value="advanced">Advanced</option>
+                    </select>
+                  </Field>
+
+                  <Field label="Experience level">
+                    <select
+                      value={quizConfig.experienceLevel}
+                      onChange={(e) => setQuizConfig({ ...quizConfig, experienceLevel: e.target.value })}
+                      style={SELECT_STYLE}
+                    >
+                      <option value="beginner">Beginner (0-1 years)</option>
+                      <option value="intermediate">Intermediate (1-3 years)</option>
+                      <option value="advanced">Advanced (3+ years)</option>
+                    </select>
+                  </Field>
+
+                  <Field label="Questions">
+                    <select
+                      value={quizConfig.questionCount}
+                      onChange={(e) => setQuizConfig({ ...quizConfig, questionCount: Number(e.target.value) })}
+                      style={SELECT_STYLE}
+                    >
+                      <option value={5}>5 questions</option>
+                      <option value={10}>10 questions</option>
+                      <option value={15}>15 questions</option>
+                      <option value={20}>20 questions</option>
+                    </select>
+                  </Field>
+                </FieldGroup>
+              )}
+
+              {error && <InlineMessage tone="error" style={{ marginTop: 20 }}>{error}</InlineMessage>}
             </div>
 
-            {loadingTopics ? (
-              <div className="text-center py-12">
-                <svg className="animate-spin h-12 w-12 mx-auto text-indigo-500" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <p className="text-slate-300 mt-4">Loading topics...</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {/* Topic Selection */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">
-                    Select Topic *
-                  </label>
-                  <select
-                    value={quizConfig.topicId}
-                    onChange={handleTopicChange}
-                    className="w-full px-4 py-3 bg-[#1a1f2e] border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="" className="bg-[#1a1f2e] text-white">Choose a topic...</option>
-                    {topics.map((topic) => (
-                      <option key={topic._id} value={topic._id} className="bg-[#1a1f2e] text-white">
-                        {topic.icon} {topic.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Difficulty Level */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">
-                    Difficulty Level
-                  </label>
-                  <select
-                    value={quizConfig.difficulty}
-                    onChange={(e) => setQuizConfig({ ...quizConfig, difficulty: e.target.value })}
-                    className="w-full px-4 py-3 bg-[#1a1f2e] border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="beginner" className="bg-[#1a1f2e] text-white">Beginner</option>
-                    <option value="intermediate" className="bg-[#1a1f2e] text-white">Intermediate</option>
-                    <option value="advanced" className="bg-[#1a1f2e] text-white">Advanced</option>
-                  </select>
-                </div>
-
-                {/* Experience Level */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">
-                    Experience Level
-                  </label>
-                  <select
-                    value={quizConfig.experienceLevel}
-                    onChange={(e) => setQuizConfig({ ...quizConfig, experienceLevel: e.target.value })}
-                    className="w-full px-4 py-3 bg-[#1a1f2e] border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="beginner" className="bg-[#1a1f2e] text-white">Beginner (0-1 years)</option>
-                    <option value="intermediate" className="bg-[#1a1f2e] text-white">Intermediate (1-3 years)</option>
-                    <option value="advanced" className="bg-[#1a1f2e] text-white">Advanced (3-5 years)</option>
-                    <option value="expert" className="bg-[#1a1f2e] text-white">Expert (5+ years)</option>
-                  </select>
-                </div>
-
-                {/* Number of Questions */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">
-                    Number of Questions
-                  </label>
-                  <select
-                    value={quizConfig.questionCount}
-                    onChange={(e) => setQuizConfig({ ...quizConfig, questionCount: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 bg-[#1a1f2e] border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="5" className="bg-[#1a1f2e] text-white">5 Questions</option>
-                    <option value="10" className="bg-[#1a1f2e] text-white">10 Questions</option>
-                    <option value="15" className="bg-[#1a1f2e] text-white">15 Questions</option>
-                    <option value="20" className="bg-[#1a1f2e] text-white">20 Questions</option>
-                  </select>
-                </div>
-
-                {/* Buttons */}
-                <div className="flex gap-4 pt-2">
-                  <button
-                    onClick={() => navigate('/assessment')}
-                  className="flex-1 px-6 py-3 bg-white/10 border border-white/20 text-white rounded-lg hover:bg-white/20 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleConfigureNext}
-                    className="flex-1 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all transform hover:scale-[1.02] shadow-lg"
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+            <div style={{ padding: '18px 34px', borderTop: '1px solid var(--color-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Button variant="quiet" onClick={() => navigate('/assessment')}>Back</Button>
+              <Button onClick={handleConfigureNext} disabled={!quizConfig.topicId}>Continue</Button>
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -312,120 +369,50 @@ const QuizPage = () => {
   // Stage 2: Instructions & Quiz Details
   if (stage === 'instructions') {
     return (
-      <div className="min-h-screen bg-black relative flex items-center justify-center py-4 px-4">
-        <div className="max-w-4xl w-full mx-auto relative z-10">
-          <div className="backdrop-blur-xl bg-slate-900/60 rounded-2xl shadow-2xl border border-white/10 p-5">
-            {/* Header */}
-            <div className="text-center mb-4">
-              <div className="text-4xl mb-1">{quizConfig.topicIcon}</div>
-              <h1 className="text-2xl font-bold text-white mb-0.5">{quizConfig.topicName}</h1>
-              <p className="text-slate-300 text-sm">Assessment Details</p>
+      <div style={{ background: 'var(--color-paper)', minHeight: '100vh', padding: '48px 32px' }}>
+        <div style={{ maxWidth: 760, margin: '0 auto' }}>
+          <Card>
+            <CardHeader label="Before you begin" />
+            <div style={{ padding: '32px 34px' }}>
+              <h1 style={{ ...type.question, margin: 0, color: 'var(--color-ink)' }}>Ready to start</h1>
+
+              <div className="grid-sm-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', padding: '14px 0', borderTop: '1px solid var(--color-line-soft)', borderBottom: '1px solid var(--color-line-soft)', margin: '24px 0' }}>
+                {[
+                  { label: 'Questions', value: quizConfig.questionCount },
+                  { label: 'Time limit', value: `${quizConfig.questionCount} min` },
+                  { label: 'To pass', value: '70%' },
+                ].map((s) => (
+                  <div key={s.label}>
+                    <MicroLabel size={10.5} tracking="0.13em" color="var(--color-text-4)" style={{ display: 'block', marginBottom: 8 }}>{s.label}</MicroLabel>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 20, color: 'var(--color-ink)' }}>{s.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              <MicroLabel size={10.5} tracking="0.13em" style={{ display: 'block', marginBottom: 16 }}>How it works</MicroLabel>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {[
+                  'Each question has one correct answer. You can change a choice before moving on.',
+                  'The timer runs from the moment you start and does not pause.',
+                  'Leaving the page ends the attempt and records what you had answered.',
+                  'You may retake this assessment as many times as you like.',
+                ].map((rule, i) => (
+                  <div key={rule} style={{ display: 'grid', gridTemplateColumns: '20px 1fr', gap: 16, alignItems: 'start' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--color-clay)', paddingTop: 2 }}>{String(i + 1).padStart(2, '0')}</span>
+                    <span style={{ fontSize: 14.5, color: 'var(--color-text-2)', lineHeight: 1.55 }}>{rule}</span>
+                  </div>
+                ))}
+              </div>
+
+              {error && <InlineMessage tone="error" style={{ marginTop: 20 }}>{error}</InlineMessage>}
             </div>
 
-            {/* Quiz Details */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-xl mb-1">📝</div>
-                <div className="text-slate-400 text-xs">Questions</div>
-                <div className="text-white font-bold text-lg">{quizConfig.questionCount}</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-xl mb-1">⏱️</div>
-                <div className="text-slate-400 text-xs">Duration</div>
-                <div className="text-white font-bold text-lg">{quizConfig.questionCount * 1} min</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-xl mb-1">📊</div>
-                <div className="text-slate-400 text-xs">Difficulty</div>
-                <div className="text-white font-bold text-lg capitalize">{quizConfig.difficulty}</div>
-              </div>
-              <div className="bg-white/5 rounded-lg p-3 text-center">
-                <div className="text-xl mb-1">👤</div>
-                <div className="text-slate-400 text-xs">Experience</div>
-                <div className="text-white font-bold text-lg capitalize">{quizConfig.experienceLevel}</div>
-              </div>
+            <div style={{ padding: '18px 34px', borderTop: '1px solid var(--color-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Button variant="quiet" onClick={() => setStage('configure')}>Back</Button>
+              <Button onClick={handleStartQuizFromInstructions} loading={loading} loadingLabel="Starting…">Start assessment</Button>
             </div>
-
-            {/* Instructions */}
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4 mb-3">
-              <h2 className="text-base font-semibold text-white mb-2">Instructions</h2>
-              <ul className="space-y-1.5 text-slate-300 text-sm">
-                <li className="flex items-start gap-2">
-                  <span className="text-green-500">✓</span>
-                  <span>Read each question carefully before answering</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-green-500">✓</span>
-                  <span>You can mark questions for review and come back later</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-green-500">✓</span>
-                  <span>Once submitted, you cannot change your answers</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-green-500">✓</span>
-                  <span>The timer will start when you click "Start Quiz"</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-yellow-500">⚠</span>
-                  <span>Do not refresh the page or the quiz will be lost</span>
-                </li>
-              </ul>
-            </div>
-
-            {/* Terms Agreement */}
-            <div className="bg-white/5 border border-white/10 rounded-lg p-3 mb-4">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={agreedToTerms}
-                  onChange={(e) => setAgreedToTerms(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 text-indigo-600 bg-slate-700 border-slate-600 rounded focus:ring-indigo-500 focus:ring-2"
-                />
-                <span className="text-slate-300 text-sm">
-                  I agree to the terms and conditions. I understand that this quiz is timed and must be completed in one session.
-                </span>
-              </label>
-            </div>
-
-            {/* Action Buttons */}
-            {error && (
-              <div className="mb-4 p-4 bg-red-500/10 border border-red-500 rounded-lg text-red-500">
-                {error}
-              </div>
-            )}
-
-            <div className="flex gap-4">
-              <button
-                onClick={() => setStage('configure')}
-                  className="flex-1 px-6 py-3 bg-white/10 border border-white/20 text-white rounded-lg hover:bg-white/20 transition-colors"
-                    disabled={loading}
-              >
-                Back
-              </button>
-              <button
-                onClick={handleStartQuizFromInstructions}
-                disabled={!agreedToTerms || loading}
-                className={`flex-1 px-6 py-3 text-white rounded-lg font-semibold text-base transition-all transform shadow-lg ${
-                  !agreedToTerms || loading
-                    ? 'bg-slate-600 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 hover:scale-[1.02]'
-                }`}
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Starting Quiz...
-                  </span>
-                ) : (
-                  '🚀 Start Quiz'
-                )}
-              </button>
-            </div>
-          </div>
+          </Card>
         </div>
       </div>
     );
@@ -435,15 +422,13 @@ const QuizPage = () => {
   if (stage === 'quiz' && quizStarted) {
     if (!assessment || !questions.length) {
       return (
-        <div className="flex min-h-screen bg-black items-center justify-center">
-          <div className="text-center">
-            <div className="text-red-500 text-xl mb-4">Quiz not found</div>
-            <button
-              onClick={() => navigate("/assessment")}
-              className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-            >
-              Back to Assessments
-            </button>
+        <div style={{ background: 'var(--color-paper)', minHeight: '100vh', padding: '48px 32px' }}>
+          <div style={{ maxWidth: 760, margin: '0 auto' }}>
+            <Card>
+              <Empty action={<Button onClick={() => navigate('/assessment')}>Back to assessments</Button>}>
+                This assessment could not be loaded.
+              </Empty>
+            </Card>
           </div>
         </div>
       );
@@ -480,8 +465,10 @@ const QuizPage = () => {
 
   // Fallback
   return (
-    <div className="flex min-h-screen bg-black items-center justify-center">
-      <div className="text-white text-xl">Loading...</div>
+    <div style={{ background: 'var(--color-paper)', minHeight: '100vh', padding: '48px 32px' }}>
+      <div style={{ maxWidth: 760, margin: '0 auto' }}>
+        <Card><Loading /></Card>
+      </div>
     </div>
   );
 };

@@ -1,6 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import connectDB from './config/db.js';
 import { verifyEmailConfig } from './config/mailConfig.js';
 
@@ -9,14 +11,22 @@ import authRoutes from './routes/authRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
 import quizRoutes from './routes/quizRoutes.js';
 import contactRoutes from './routes/contactRoutes.js';
+import unsubscribeRoutes from './routes/unsubscribeRoutes.js';
+import internalRoutes from './routes/internalRoutes.js';
+import startScheduler from './services/scheduler.js';
+import startAiWarmup from './services/aiWarmup.js';
 import resumeRoutes from './routes/resumeRoutes.js';
 import resumeGeneratorRoutes from './routes/resumeGeneratorRoutes.js';
 import portfolioRoutes from './routes/portfolioRoutes.js';
 import atsRoutes from './routes/atsRoutes.js';
 import csRoutes from './routes/csRoutes.js';
 import mockInterviewRoutes from './routes/mockInterviewRoutes.js';
+import practiceResultRoutes from './routes/practiceResultRoutes.js';
 import roadmapRoutes from './routes/roadmapRoutes.js';
 import progressRoutes from './routes/progress.js';
+import feedbackRoutes from './routes/feedbackRoutes.js';
+import careerRoleRoutes from './routes/careerRoleRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 import { errorHandler, notFound } from './middlewares/errorMiddleware.js';
 
@@ -25,6 +35,11 @@ dotenv.config();
 
 // Create Express app
 const app = express();
+
+// Render terminates TLS at its proxy, so req.ip is the proxy's address unless we
+// trust one hop. Rate limiting keys on req.ip — without this every request looks
+// like it came from the same client and the limits apply to everyone at once.
+app.set('trust proxy', 1);
 
 const configuredFrontendOrigin = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
 const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -59,11 +74,29 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(new Error(`CORS blocked origin: ${origin}`));
+      // Marked so the error handler can answer 403 rather than 500. A
+      // request from an origin this API does not serve is a policy decision,
+      // not a fault on this side — reporting it as a server error puts it in
+      // the logs beside genuine crashes and tells the caller the wrong thing
+      // about who has the problem.
+      const blocked = new Error(`CORS blocked origin: ${origin}`);
+      blocked.statusCode = 403;
+      blocked.isOperational = true;
+      return callback(blocked);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+// Security headers. This service only ever returns JSON, so CSP protects nothing
+// here and is disabled to avoid surprises; CORP has to be cross-origin because the
+// frontend is served from a different origin than this API.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
 
@@ -79,19 +112,79 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
+// Rate limiting
+const rateLimitResponse = (message) => ({ success: false, message });
+
+// Broad ceiling for the whole API. Generous enough that normal use never sees it.
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: rateLimitResponse('Too many requests. Please try again in a few minutes.'),
+});
+
+// Brute-force guard. skipSuccessfulRequests means only failed logins count, so a
+// legitimate user is never locked out by their own successful sign-ins.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: rateLimitResponse('Too many failed login attempts. Please try again in 15 minutes.'),
+});
+
+// Endpoints that send email or create accounts — abuse here costs real money and
+// inbox reputation, so successful requests count too.
+const sensitiveLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: rateLimitResponse('Too many requests for this action. Please try again in an hour.'),
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/signup', sensitiveLimiter);
+app.use('/api/auth/forgot-password', sensitiveLimiter);
+app.use('/api/auth/resend-otp', sensitiveLimiter);
+app.use('/api/contact/send', sensitiveLimiter);
+// Guarded by a secret already; this only blunts someone hammering the URL.
+app.use('/api/internal', sensitiveLimiter);
+
+// Guessing a 6-digit code is only hard if guesses are limited. 10 attempts per
+// 15 minutes leaves a brute-forcer needing years; a real user needs two or three.
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: rateLimitResponse('Too many verification attempts. Please try again in 15 minutes.'),
+});
+app.use('/api/auth/verify-otp', otpLimiter);
+
 // API Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/quiz', quizRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/unsubscribe', unsubscribeRoutes);
+app.use('/api/internal', internalRoutes);
 app.use('/api/resume', resumeRoutes);
 app.use('/api/resume-generator', resumeGeneratorRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/ats', atsRoutes);
 app.use('/api/cs', csRoutes);
 app.use('/api/mock-interview', mockInterviewRoutes);
+app.use('/api/practice', practiceResultRoutes);
 app.use('/api/roadmap', roadmapRoutes);
 app.use('/api/progress', progressRoutes);
+app.use('/api/feedback', feedbackRoutes);
+app.use('/api/career-roles', careerRoleRoutes);
 
 // Health check route
 app.get('/health', (req, res) => {
@@ -143,6 +236,8 @@ const server = app.listen(PORT, () => {
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Started at: ${new Date().toLocaleString()}`);
   console.log('='.repeat(50));
+  startScheduler();
+  startAiWarmup();
 });
 
 // Handle unhandled promise rejections

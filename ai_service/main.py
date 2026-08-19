@@ -19,22 +19,10 @@ try:
     from fastapi import FastAPI, File, UploadFile, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError as e:
     print(f"Error: FastAPI is not installed. Please run: pip install fastapi uvicorn pydantic")
     sys.exit(1)
-
-try:
-    from resume_parser import get_parser
-except ImportError as e:
-    print(f"Error: resume_parser module not found. {e}")
-    sys.exit(1)
-
-try:
-    from agents.roadmap_generator import RoadmapGeneratorAgent
-except ImportError as e:
-    print(f"Warning: Roadmap generator module not found. Feature disabled. {e}")
-    RoadmapGeneratorAgent = None
 
 # Import new modules for Skill Assessment with CrewAI
 try:
@@ -66,7 +54,7 @@ async def startup_event():
     print("\n" + "="*60)
     print("🚀 EduPath AI Service Starting...")
     print("="*60)
-    
+
     if SKILL_ASSESSMENT_ENABLED:
         try:
             await init_db()
@@ -74,7 +62,7 @@ async def startup_event():
         except Exception as e:
             print(f"⚠️  MongoDB connection failed: {e}")
             print("⚠️  Continuing without database persistence")
-    
+
     print("="*60)
     print("✅ AI Service Ready")
     print("="*60 + "\n")
@@ -84,23 +72,47 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     print("\n🛑 Shutting down AI Service...")
-    
+
     if SKILL_ASSESSMENT_ENABLED:
         try:
             await close_db()
             print("✅ Database connections closed")
         except Exception as e:
             print(f"⚠️  Error closing database: {e}")
-    
+
     print("👋 Goodbye!\n")
 
 # CORS configuration
+#
+# This was allow_origins=["*"] with allow_credentials=True, which reads like
+# the usual harmless wildcard and is not one. Starlette sets
+# preflight_explicit_allow_origin when credentials are allowed, so instead of
+# answering "*" — which browsers refuse to pair with credentials — it echoed
+# whatever Origin asked and added Access-Control-Allow-Credentials: true. Every
+# origin on the internet was allowed, with credentials, and the browser had no
+# reason to stop any of it.
+#
+# Nothing needed it. The frontend talks only to the Node backend
+# (frontend/src/config.js), the backend calls this service server to server,
+# and a request with no Origin header never reaches this middleware at all —
+# so the default here is no browser origin rather than a guess at one.
+# Server-to-server callers and the /docs page are unaffected.
+_allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("AI_SERVICE_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure based on your frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    # No cookie or session auth exists on this service, so nothing here is
+    # credentialed. Leaving it off is also what keeps a future "*" in the
+    # variable above an actual wildcard rather than the echo-everything
+    # behaviour described above.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Request logging middleware
@@ -108,16 +120,13 @@ app.add_middleware(
 async def log_requests(request: Request, call_next):
     """Log all incoming requests"""
     start_time = time.time()
-    
     print(f"\n📨 {request.method} {request.url.path}")
-    
     response = await call_next(request)
-    
     process_time = time.time() - start_time
     print(f"Completed in {process_time:.3f}s")
-    
     response.headers["X-Process-Time"] = str(process_time)
     return response
+
 
 class SkillMatchRequest(BaseModel):
     """Request model for skill matching endpoint"""
@@ -142,21 +151,26 @@ class RoadmapGenerateRequest(BaseModel):
     user_id: str
     target_role: str
     experience_level: str = "beginner"
-    hours_per_week: int = 10
+    # Bounded rather than clamped: hours_per_week=0 used to fall back to 1 and
+    # return a 489-week (9+ year) plan instead of rejecting the input.
+    hours_per_week: int = Field(default=10, ge=1, le=168)
     learning_style: str = "mixed"
     skill_gaps: List[SkillGapItem] = []
     skill_scores: dict = {}
     current_skills: List[CurrentSkillItem] = []
+    # "Modules per roadmap" from the admin settings screen. Optional so a
+    # caller that does not send it gets the whole track, as before.
+    max_modules: Optional[int] = Field(default=None, ge=1, le=30)
 
 
-class AdaptRoadmapRequest(BaseModel):
-    user_id: str
-    roadmap_id: str
-    progress_data: dict
-    adaptation_reason: str = "slow_progress"
-
-
-roadmap_agent = RoadmapGeneratorAgent() if RoadmapGeneratorAgent else None
+class JobMatchRequest(BaseModel):
+    job_description: str = Field(..., min_length=20, max_length=20000)
+    known_skills: List[str] = []
+    hours_per_week: int = Field(default=10, ge=1, le=168)
+    experience_level: str = "beginner"
+    # Lets a learner ask what a posting means for the track they are on,
+    # rather than only for the track it fits best.
+    role_hint: Optional[str] = None
 
 
 @app.get("/")
@@ -205,10 +219,15 @@ async def health_check():
 async def parse_resume(file: UploadFile = File(...)):
     """
     Parse uploaded resume using Surya OCR
-
     Accepts: PDF, DOCX, JPG, PNG, TIFF (max 10MB)
     Returns: Structured resume data with skills, experience, education
     """
+
+    # ✅ LAZY IMPORT — loads surya-ocr/torch only when this endpoint is called
+    try:
+        from resume_parser import get_parser
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"Resume parser not available: {e}")
 
     # Validate file type
     allowed_extensions = ['.pdf', '.docx', '.doc', '.jpg', '.jpeg', '.png', '.tiff']
@@ -228,14 +247,12 @@ async def parse_resume(file: UploadFile = File(...)):
     tmp_file_path = None
 
     try:
-        # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
 
         print(f"📄 Processing: {file.filename}")
 
-        # Parse resume
         parser = get_parser()
         parsed_data = parser.parse_resume(tmp_file_path, file_ext[1:])
 
@@ -246,7 +263,6 @@ async def parse_resume(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error parsing resume: {str(e)}")
 
     finally:
-        # Clean up temp file
         if tmp_file_path and os.path.exists(tmp_file_path):
             os.unlink(tmp_file_path)
 
@@ -255,9 +271,7 @@ async def parse_resume(file: UploadFile = File(...)):
 async def match_skills(request: SkillMatchRequest):
     """
     Match extracted skills with database skills using fuzzy matching
-
     Uses 70% similarity threshold for matching.
-    Returns matched and unmatched skills with confidence scores.
     """
 
     try:
@@ -274,7 +288,7 @@ async def match_skills(request: SkillMatchRequest):
                     best_score = score
                     best_match = db_skill
 
-            if best_score > 0.7:  # 70% similarity threshold
+            if best_score > 0.7:
                 matched.append({
                     "extracted": ext_skill,
                     "database_match": best_match,
@@ -327,7 +341,12 @@ async def generate_roadmap(request: RoadmapGenerateRequest):
     Core roadmap generation endpoint.
     Called by Node.js backend after skill gap analysis is available.
     """
-    if not roadmap_agent:
+
+    # ✅ LAZY IMPORT — loads transformers only when this endpoint is called
+    try:
+        from agents.roadmap_generator import RoadmapGeneratorAgent
+        roadmap_agent = RoadmapGeneratorAgent()
+    except ImportError as e:
         raise HTTPException(status_code=503, detail="Roadmap generation module unavailable")
 
     try:
@@ -340,6 +359,7 @@ async def generate_roadmap(request: RoadmapGenerateRequest):
             "skill_gaps": [g.dict() for g in request.skill_gaps],
             "skill_scores": request.skill_scores,
             "current_skills": [s.dict() for s in request.current_skills],
+            "max_modules": request.max_modules,
         }
 
         result = roadmap_agent.generate(payload)
@@ -351,19 +371,48 @@ async def generate_roadmap(request: RoadmapGenerateRequest):
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 
-@app.post("/api/roadmap/adapt")
-async def adapt_roadmap(request: AdaptRoadmapRequest):
+@app.post("/api/jobs/analyse")
+async def analyse_job_posting(request: JobMatchRequest):
     """
-    Autonomous adaptation endpoint.
-    Placeholder for future AdaptationAgent implementation.
+    Read a job posting against the curriculum.
+
+    Answers the question a learner actually arrives with — can I do this job,
+    and if not, how far off am I — rather than the one the ATS check answers,
+    which is whether their CV contains the right words.
     """
-    return {
-        "success": True,
-        "message": "Adaptation agent queued.",
-        "roadmap_id": request.roadmap_id,
-        "adaptation_reason": request.adaptation_reason,
-    }
-    
+    try:
+        from utils.job_matcher import analyse_job
+
+        return analyse_job(
+            request.job_description,
+            known_skills=request.known_skills,
+            hours_per_week=request.hours_per_week,
+            experience_level=request.experience_level,
+            role_hint=request.role_hint,
+        )
+    except Exception as e:
+        logger.error(f"Job analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Error analysing posting: {str(e)}")
+
+
+# There was a POST /api/roadmap/adapt here. It answered
+# {"success": true, "message": "Adaptation agent queued."} and then did
+# nothing at all — no adaptation, no queue, no agent, nothing written. Any
+# caller that believed the response would have reported a rebuilt plan to a
+# learner whose plan had not moved.
+#
+# Adaptation is real, but it lives in the backend: POST /api/roadmap/adapt in
+# controllers/roadmapController.js rebuilds the saved document by calling
+# /api/roadmap/generate below and merging the learner's progress back onto the
+# result. That route is what the frontend calls and always was. This one had
+# no caller in any of the three services.
+#
+# Removed rather than implemented, because a second adaptation path would have
+# to re-solve progress carry-over — see utils/mergeRoadmapProgress.js for why
+# neither ticks nor skills can be carried by position — to end up where the
+# backend already is.
+
+
 if SKILL_ASSESSMENT_ENABLED:
     @app.post(
         "/api/ai/assess-skill",
@@ -373,16 +422,10 @@ if SKILL_ASSESSMENT_ENABLED:
     async def assess_skill(request: SkillAssessmentRequest):
         """
         Analyze skill assessment results using AI
-
-        Returns comprehensive analysis including:
-        - Skill strength score
-        - Weak areas and recommendations
-        - Next steps and progression timeline
         """
         try:
             start_time = time.time()
 
-            # Convert request to dict format
             difficulty_breakdown = {
                 'beginner': request.difficulty_breakdown.beginner.dict(),
                 'intermediate': request.difficulty_breakdown.intermediate.dict(),
@@ -391,7 +434,6 @@ if SKILL_ASSESSMENT_ENABLED:
 
             answers = [answer.dict() for answer in request.answers]
 
-            # Call the AI Skill Assessment
             analysis_result = await skill_assessment_service.assess_skill(
                 skill_name=request.skill_name,
                 normalized_score=request.normalized_score,
@@ -449,14 +491,13 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    
+    port = int(os.environ.get("PORT", 8000))
     print("🚀 Starting EduPath AI Service...")
-    print("📡 Server will run on http://localhost:8000")
-    print("📖 API docs: http://localhost:8000/docs")
-    
+    print(f"📡 Server will run on http://0.0.0.0:{port}")
+    print(f"📖 API docs: http://0.0.0.0:{port}/docs")
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=port,
         log_level="info"
     )

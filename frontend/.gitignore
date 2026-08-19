@@ -3,6 +3,7 @@
 # =========================
 .env
 .env.*
+!.env.example
 *.local
 
 # =========================
@@ -48,3 +49,4 @@ Thumbs.db
 
 backend/node_modules/
 frontend/node_modules/
+.vercel

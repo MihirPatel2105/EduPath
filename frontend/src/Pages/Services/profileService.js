@@ -60,6 +60,16 @@ export const changePassword = async (passwordData) => {
   }
 };
 
+// Permanently delete the account. The password is re-checked server side.
+export const deleteAccount = async (password) => {
+  try {
+    const response = await API.delete('/auth/account', { data: { password } });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 // Forgot password - Send reset email
 export const forgotPassword = async (email) => {
   try {
@@ -74,6 +84,27 @@ export const forgotPassword = async (email) => {
 export const resetPassword = async (token, passwordData) => {
   try {
     const response = await API.post(`/auth/reset-password/${token}`, passwordData);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+// Record that the first-run tour has been dismissed
+export const markTourSeen = async () => {
+  try {
+    const response = await API.put('/profile/tour-seen');
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+// A one-line state for each part of the product the Overview does not
+// otherwise mention, in a single request.
+export const getActivitySummary = async () => {
+  try {
+    const response = await API.get('/profile/activity');
     return response.data;
   } catch (error) {
     throw error.response?.data || error;

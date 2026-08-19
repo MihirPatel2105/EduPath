@@ -1,4 +1,18 @@
-import createTransporter from '../config/mailConfig.js';
+import { deliver, isApiTransportConfigured } from '../services/emailProvider.js';
+import {
+  layout,
+  heading,
+  paragraph,
+  subtle,
+  button,
+  codeBlock,
+  detailRows,
+  notice,
+  linkFallback,
+  badge,
+  escapeHtml,
+  bulletList,
+} from './emailLayout.js';
 
 /**
  * Send email utility function
@@ -11,17 +25,13 @@ import createTransporter from '../config/mailConfig.js';
  */
 const sendEmail = async (options) => {
   try {
-    const transporter = createTransporter();
-
-    const mailOptions = {
-      from: process.env.EMAIL_FROM,
+    await deliver({
       to: options.email,
       subject: options.subject,
       html: options.html,
-    };
+    });
 
-    await transporter.sendMail(mailOptions);
-    console.log(`✅ Email sent to ${options.email}`);
+    console.log(`✅ Email sent to ${options.email} via ${isApiTransportConfigured() ? 'Brevo' : 'SMTP'}`);
     return true;
   } catch (error) {
     console.error(`❌ Email sending failed: ${error.message}`);
@@ -30,147 +40,70 @@ const sendEmail = async (options) => {
 };
 
 /**
- * Send welcome email with login credentials
- * 
+ * Send welcome email
+ *
+ * Sent after the account is verified. It deliberately does not contain the
+ * password: mail sits unencrypted in inboxes and in the provider's logs, and
+ * the user chose the password, so there is nothing to tell them.
+ *
  * @param {Object} user - User object
- * @param {string} password - Plain text password
  * @returns {Promise<boolean>} Success status
  */
-export const sendWelcomeEmail = async (user, password) => {
-  const html = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          line-height: 1.6;
-          color: #333;
-          max-width: 600px;
-          margin: 0 auto;
-          padding: 20px;
-        }
-        .header {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          padding: 30px;
-          text-align: center;
-          border-radius: 10px 10px 0 0;
-        }
-        .content {
-          background: #f9f9f9;
-          padding: 30px;
-          border-radius: 0 0 10px 10px;
-        }
-        .credentials {
-          background: white;
-          padding: 20px;
-          margin: 20px 0;
-          border-radius: 8px;
-          border-left: 4px solid #667eea;
-        }
-        .credential-item {
-          margin: 10px 0;
-          font-size: 16px;
-        }
-        .credential-label {
-          font-weight: bold;
-          color: #667eea;
-        }
-        .credential-value {
-          font-family: 'Courier New', monospace;
-          background: #f0f0f0;
-          padding: 8px 12px;
-          border-radius: 4px;
-          display: inline-block;
-          margin-left: 10px;
-        }
-        .button {
-          display: inline-block;
-          padding: 12px 30px;
-          background: #667eea;
-          color: white;
-          text-decoration: none;
-          border-radius: 5px;
-          margin-top: 20px;
-        }
-        .footer {
-          text-align: center;
-          margin-top: 30px;
-          color: #666;
-          font-size: 14px;
-        }
-        .warning {
-          background: #fff3cd;
-          border-left: 4px solid #ffc107;
-          padding: 15px;
-          margin: 20px 0;
-          border-radius: 4px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>🎓 Welcome to EduPath!</h1>
-      </div>
-      <div class="content">
-        <h2>Hello ${user.firstName} ${user.lastName},</h2>
-        <p>Congratulations! Your account has been successfully created on EduPath - Your Autonomous Learning & Career Roadmap Generator.</p>
-        
-        <div class="credentials">
-          <h3>📝 Your Login Credentials</h3>
-          <div class="credential-item">
-            <span class="credential-label">Login ID:</span>
-            <span class="credential-value">${user.loginId}</span>
-          </div>
-          <div class="credential-item">
-            <span class="credential-label">Email:</span>
-            <span class="credential-value">${user.email}</span>
-          </div>
-          <div class="credential-item">
-            <span class="credential-label">Password:</span>
-            <span class="credential-value">${password}</span>
-          </div>
-        </div>
-
-        <div class="warning">
-          <strong>⚠️ Important Security Notice:</strong>
-          <p style="margin: 10px 0 0 0;">Please change your password after your first login for security purposes. Keep your credentials safe and do not share them with anyone.</p>
-        </div>
-
-        <p><strong>What's Next?</strong></p>
-        <ul>
-          <li>Complete your profile setup</li>
-          <li>Select your target career path</li>
-          <li>Take skill assessments</li>
-          <li>Get your personalized learning roadmap</li>
-        </ul>
-
-        <center>
-          <a href="${process.env.FRONTEND_URL}/login" class="button">Login to EduPath</a>
-        </center>
-
-        <div class="footer">
-          <p>If you didn't create this account, please ignore this email or contact our support team.</p>
-          <p>&copy; ${new Date().getFullYear()} EduPath. All rights reserved.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+export const sendWelcomeEmail = async (user) => {
+  const html = layout({
+    preheader: `Your EduPath account is ready, ${user.firstName}.`,
+    eyebrow: 'Welcome',
+    content: [
+      heading('Your account is ready'),
+      paragraph(`Hi ${user.firstName}, your email is verified and your EduPath account is active.`),
+      detailRows([
+        { label: 'Login ID', value: user.loginId },
+        { label: 'Email', value: user.email },
+      ]),
+      paragraph('To get started, complete your profile and pick a target role &mdash; that is what your roadmap and skill assessments are built from.'),
+      button('Open EduPath', `${process.env.FRONTEND_URL}/profile`),
+      notice('EduPath will never email you your password, and will never ask for it. If a message claims to, it did not come from us.'),
+    ].join('\n'),
+  });
 
   return await sendEmail({
     email: user.email,
-    subject: '🎓 Welcome to EduPath - Your Login Credentials',
+    subject: 'Welcome to EduPath',
+    html,
+  });
+};
+
+/**
+ * Send the 6-digit email verification code.
+ *
+ * @param {Object} user - User object
+ * @param {string} otp - the plain 6-digit code (only the hash is stored)
+ * @param {number} expiryMinutes - how long the code stays valid
+ * @returns {Promise<boolean>} Success status
+ */
+export const sendVerificationEmail = async (user, otp, expiryMinutes = 10) => {
+  const html = layout({
+    preheader: `${otp} is your EduPath verification code.`,
+    eyebrow: 'Verify your email',
+    content: [
+      heading('Verify your email address'),
+      paragraph(`Hi ${user.firstName}, enter this code in EduPath to finish setting up your account.`),
+      codeBlock(otp),
+      subtle(`This code expires in ${expiryMinutes} minutes.`),
+      notice('If you did not create an EduPath account, you can ignore this email. The account cannot be used until this code is entered.'),
+    ].join('\n'),
+  });
+
+  return await sendEmail({
+    email: user.email,
+    subject: `${otp} is your EduPath verification code`,
     html,
   });
 };
 
 /**
  * Send password reset email
- * 
+ *
  * @param {Object} user - User object
  * @param {string} resetToken - Reset token
  * @returns {Promise<boolean>} Success status
@@ -178,186 +111,161 @@ export const sendWelcomeEmail = async (user, password) => {
 export const sendPasswordResetEmail = async (user, resetToken) => {
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
-  const html = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          line-height: 1.6;
-          color: #333;
-          max-width: 600px;
-          margin: 0 auto;
-          padding: 20px;
-        }
-        .header {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          padding: 30px;
-          text-align: center;
-          border-radius: 10px 10px 0 0;
-        }
-        .content {
-          background: #f9f9f9;
-          padding: 30px;
-          border-radius: 0 0 10px 10px;
-        }
-        .button {
-          display: inline-block;
-          padding: 12px 30px;
-          background: #667eea;
-          color: white;
-          text-decoration: none;
-          border-radius: 5px;
-          margin-top: 20px;
-        }
-        .warning {
-          background: #f8d7da;
-          border-left: 4px solid #dc3545;
-          padding: 15px;
-          margin: 20px 0;
-          border-radius: 4px;
-        }
-        .footer {
-          text-align: center;
-          margin-top: 30px;
-          color: #666;
-          font-size: 14px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>🔐 Password Reset Request</h1>
-      </div>
-      <div class="content">
-        <h2>Hello ${user.firstName},</h2>
-        <p>We received a request to reset your password for your EduPath account.</p>
-        
-        <p>Click the button below to reset your password:</p>
-        
-        <center>
-          <a href="${resetUrl}" class="button">Reset Password</a>
-        </center>
-
-        <p style="margin-top: 20px;">Or copy and paste this link into your browser:</p>
-        <p style="background: #f0f0f0; padding: 10px; border-radius: 4px; word-break: break-all;">${resetUrl}</p>
-
-        <div class="warning">
-          <strong>⏰ This link will expire in 10 minutes</strong>
-          <p style="margin: 10px 0 0 0;">For security reasons, this password reset link is only valid for 10 minutes.</p>
-        </div>
-
-        <p><strong>Didn't request this?</strong></p>
-        <p>If you didn't request a password reset, please ignore this email. Your password will remain unchanged.</p>
-
-        <div class="footer">
-          <p>For security reasons, never share this email with anyone.</p>
-          <p>&copy; ${new Date().getFullYear()} EduPath. All rights reserved.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+  const html = layout({
+    preheader: 'Reset your EduPath password. This link expires in 10 minutes.',
+    eyebrow: 'Password reset',
+    content: [
+      heading('Reset your password'),
+      paragraph(`Hi ${user.firstName}, we received a request to reset the password for your EduPath account.`),
+      button('Reset password', resetUrl),
+      subtle('This link expires in 10 minutes and can only be used once.'),
+      linkFallback(resetUrl),
+      notice('If you did not request this, you can ignore this email &mdash; your password will not change.'),
+    ].join('\n'),
+  });
 
   return await sendEmail({
     email: user.email,
-    subject: '🔐 Password Reset Request - EduPath',
+    subject: 'Reset your EduPath password',
     html,
   });
 };
 
 /**
  * Send password change confirmation email
- * 
+ *
  * @param {Object} user - User object
  * @returns {Promise<boolean>} Success status
  */
 export const sendPasswordChangeEmail = async (user) => {
-  const html = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          line-height: 1.6;
-          color: #333;
-          max-width: 600px;
-          margin: 0 auto;
-          padding: 20px;
-        }
-        .header {
-          background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-          color: white;
-          padding: 30px;
-          text-align: center;
-          border-radius: 10px 10px 0 0;
-        }
-        .content {
-          background: #f9f9f9;
-          padding: 30px;
-          border-radius: 0 0 10px 10px;
-        }
-        .info-box {
-          background: white;
-          padding: 20px;
-          margin: 20px 0;
-          border-radius: 8px;
-          border-left: 4px solid #28a745;
-        }
-        .footer {
-          text-align: center;
-          margin-top: 30px;
-          color: #666;
-          font-size: 14px;
-        }
-        .warning {
-          background: #fff3cd;
-          border-left: 4px solid #ffc107;
-          padding: 15px;
-          margin: 20px 0;
-          border-radius: 4px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>✅ Password Changed Successfully</h1>
-      </div>
-      <div class="content">
-        <h2>Hello ${user.firstName},</h2>
-        <p>Your password has been successfully changed.</p>
-        
-        <div class="info-box">
-          <h3>📋 Change Details</h3>
-          <p><strong>Account:</strong> ${user.email}</p>
-          <p><strong>Login ID:</strong> ${user.loginId}</p>
-          <p><strong>Changed at:</strong> ${new Date().toLocaleString()}</p>
-        </div>
-
-        <div class="warning">
-          <strong>⚠️ Didn't make this change?</strong>
-          <p style="margin: 10px 0 0 0;">If you did not change your password, please contact our support team immediately as your account may be compromised.</p>
-        </div>
-
-        <div class="footer">
-          <p>Thank you for keeping your account secure!</p>
-          <p>&copy; ${new Date().getFullYear()} EduPath. All rights reserved.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+  const html = layout({
+    preheader: 'Your EduPath password was changed.',
+    eyebrow: 'Account security',
+    content: [
+      heading('Your password was changed'),
+      `              <p style="margin:0 0 18px 0;">${badge('Changed', 'green')}</p>`,
+      paragraph(`Hi ${user.firstName}, the password for your EduPath account was changed successfully.`),
+      subtle(`Changed on ${new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' })}.`),
+      notice('If this was not you, reset your password immediately and contact us. Someone else may have access to your account.'),
+      button('Go to EduPath', `${process.env.FRONTEND_URL}/signin`),
+    ].join('\n'),
+  });
 
   return await sendEmail({
     email: user.email,
-    subject: '✅ Password Changed Successfully - EduPath',
+    subject: 'Your EduPath password was changed',
+    html,
+  });
+};
+
+/**
+ * Confirm that an account was deleted.
+ *
+ * Partly a courtesy, mostly a safeguard: if someone else deleted the account,
+ * this is the only notice the owner will ever get, and it has to reach an
+ * address that no longer exists in our records.
+ *
+ * @param {Object} user - snapshot taken before the record was removed
+ * @param {Object} [removed] - counts per collection, for the summary
+ * @returns {Promise<boolean>} Success status
+ */
+export const sendAccountDeletedEmail = async (user, removed = {}) => {
+  const LABELS = {
+    roadmaps: 'Roadmaps',
+    skillGaps: 'Skill assessments',
+    quizSessions: 'Quiz sessions',
+    quizResults: 'Quiz results',
+    practiceResults: 'Aptitude & CS fundamentals results',
+    interviewResults: 'Mock interview results',
+    progressLogs: 'Progress records',
+    portfolios: 'Portfolios',
+    resumes: 'Uploaded resumes',
+    generatedResumes: 'Generated resumes',
+  };
+
+  const rows = Object.entries(removed)
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => ({ label: LABELS[key] || key, value: String(count) }));
+
+  const content = [
+    heading('Your account has been deleted'),
+    `              <p style="margin:0 0 18px 0;">${badge('Deleted', 'clay')}</p>`,
+    paragraph(`Hi ${user.firstName}, your EduPath account has been permanently deleted, along with everything stored in it. Nothing is kept, and this cannot be undone.`),
+  ];
+
+  if (rows.length) {
+    content.push(paragraph('Removed with your account:'), detailRows(rows));
+  }
+
+  content.push(
+    subtle('Portfolio sites you deployed are hosted separately and stay online. You will need to remove those from your hosting provider yourself.'),
+    paragraph('Thank you for the time you spent building here. If you ever want to start again, you are welcome back &mdash; a new account takes a minute.'),
+    button('Create a new account', `${process.env.FRONTEND_URL}/signup`),
+    notice(`If you did not delete this account, reply to this email or contact us at ${process.env.EMAIL_USER} straight away &mdash; it would mean someone else had access to it.`)
+  );
+
+  return await sendEmail({
+    email: user.email,
+    subject: 'Your EduPath account has been deleted',
+    html: layout({
+      preheader: 'Your EduPath account and its data have been permanently removed.',
+      eyebrow: 'Account deleted',
+      content: content.join('\n'),
+    }),
+  });
+};
+
+/**
+ * The Monday email: the week the learner is on, and its tasks.
+ *
+ * Deliberately narrow. It says what to do this week and links to it — no
+ * digest of everything, no streak, no scores. A weekly mail that reproduces
+ * the dashboard gets filtered; one that answers a single question gets opened.
+ *
+ * Only sent to someone who asked for it and has an unfinished plan, so the
+ * copy can assume both rather than hedging.
+ *
+ * @param {Object} user
+ * @param {Object} week - the current weekly_plan entry
+ * @param {Object} meta - { targetRole, weekCount, doneCount, unsubscribeUrl }
+ */
+export const sendWeeklyPlanEmail = async (user, week, meta = {}) => {
+  const tasks = week.tasks || [];
+  const ticked = new Set((week.completed_tasks || []).map(Number));
+  // What is left, not everything. A task ticked last week reappearing as
+  // homework reads as the product not paying attention.
+  const remaining = tasks.filter((_, i) => !ticked.has(i));
+
+  const covers = (week.skills || []).join(', ');
+  const title = covers || `Week ${week.week_number}`;
+  const openUrl = `${process.env.FRONTEND_URL}/assessment`;
+
+  const html = layout({
+    preheader: `Week ${week.week_number}: ${title} — ${remaining.length} ${remaining.length === 1 ? 'task' : 'tasks'} left.`,
+    eyebrow: `Week ${week.week_number} of ${meta.weekCount}`,
+    content: [
+      heading(title),
+      paragraph(`Hi ${escapeHtml(user.firstName)}, this is where you are on ${escapeHtml(meta.targetRole || 'your track')}.`),
+      bulletList(remaining),
+      button('Open this week', openUrl),
+      subtle(
+        `${meta.doneCount} of ${meta.weekCount} weeks done.`
+        // Whether they are keeping up, when there is something to say. A
+        // weekly email that reports the same count every week cannot tell
+        // anyone they have stopped.
+        + (meta.pace && meta.pace !== 'On schedule' ? ` ${escapeHtml(meta.pace)}.` : '')
+        + (week.estimated_hours ? ` About ${week.estimated_hours} hours planned.` : '')
+      ),
+      linkFallback(openUrl),
+      meta.unsubscribeUrl
+        ? subtle(`Not useful? <a href="${meta.unsubscribeUrl}" style="color:#3A3733;">Stop these emails</a> — your plan stays exactly as it is.`)
+        : '',
+    ].filter(Boolean).join('\n'),
+  });
+
+  return await sendEmail({
+    email: user.email,
+    subject: `Week ${week.week_number}: ${title}`,
     html,
   });
 };
